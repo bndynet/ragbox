@@ -1,0 +1,35 @@
+{
+  "name": "@bndynet/ragbox",
+  "version": "0.1.0",
+  "description": "RAG toolbox CLI for folder-level PageIndex indexing and querying.",
+  "main": "./dist/src/index.js",
+  "bin": {
+    "ragbox": "./dist/src/cli.js"
+  },
+  "files": [
+    "dist/src/cli.js",
+    "dist/src/index.js",
+    "dist/src/folder-index",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test dist/test/folder-index.test.js dist/test/e2e.test.js",
+    "test:unit": "tsc -p tsconfig.json && node --test dist/test/folder-index.test.js",
+    "test:e2e": "./scripts/e2e.sh",
+    "test:e2e:raw": "tsc -p tsconfig.json && node dist/test/e2e.test.js",
+    "ragbox": "node dist/src/cli.js"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}

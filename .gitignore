@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.pageindex/
+*.log
+.env.e2e.local
+examples/
