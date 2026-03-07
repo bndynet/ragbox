@@ -43,6 +43,7 @@ export type PageIndexOptions = {
   extraArgs?: string[];
   env?: NodeJS.ProcessEnv;
   progress?: (event: IndexProgressEvent) => void;
+  watchProgress?: (event: WatchProgressEvent) => void;
 };
 
 export type IndexProgressEvent =
@@ -81,6 +82,59 @@ export type IndexProgressEvent =
       rootTreePath: string;
     };
 
+export type WatchProgressEvent =
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-start";
+      rootDir: string;
+      outputDir: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-file-event";
+      rootDir: string;
+      outputDir: string;
+      eventName: "add" | "change" | "unlink";
+      path: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-index-start";
+      rootDir: string;
+      outputDir: string;
+      reason: "initial" | "change";
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-index-done";
+      rootDir: string;
+      outputDir: string;
+      reason: "initial" | "change";
+      result: IndexCounts;
+      manifestPath: string;
+      rootTreePath: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-index-failed";
+      rootDir: string;
+      outputDir: string;
+      reason: "initial" | "change";
+      error: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-stop";
+      rootDir: string;
+      outputDir: string;
+    };
+
 export type ScannedFile = {
   docId: string;
   path: string;
@@ -101,9 +155,23 @@ export type ManifestDiff = {
   toIndex: ScannedFile[];
 };
 
+export type IndexCounts = {
+  total: number;
+  ready: number;
+  failed: number;
+  added: number;
+  modified: number;
+  retryFailed: number;
+  unchanged: number;
+  deleted: number;
+};
+
 export type IndexFolderResult = {
   manifest: Manifest;
   rootTree: RootTreeNode;
+  outputDir: string;
+  manifestPath: string;
+  rootTreePath: string;
   added: number;
   modified: number;
   retryFailed: number;
@@ -111,6 +179,54 @@ export type IndexFolderResult = {
   deleted: number;
   failed: number;
   ready: number;
+};
+
+export type QuerySelectedDocument = {
+  docId: string;
+  available: boolean;
+  path?: string;
+  title?: string;
+  status?: DocumentStatus;
+  indexPath?: string;
+};
+
+export type QuerySelectedNode = {
+  docId: string;
+  path: string;
+  nodeId: string;
+  found: boolean;
+  hasText: boolean;
+  reference?: string;
+};
+
+export type QuerySource = {
+  path: string;
+  nodeId: string;
+  reference: string;
+  text: string;
+};
+
+export type QueryTimings = {
+  resolve: number;
+  selectDocuments: number;
+  selectNodes: number;
+  answer: number;
+  total: number;
+};
+
+export type QueryResult = {
+  version: 1;
+  target: string;
+  rootDir: string;
+  outputDir: string;
+  question: string;
+  model: string;
+  answer: string;
+  selectedDocuments: QuerySelectedDocument[];
+  selectedNodes: QuerySelectedNode[];
+  sources: QuerySource[];
+  warnings: string[];
+  timingsMs: QueryTimings;
 };
 
 export type ChatMessage = {

@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { indexFolder } from "./folder-index/indexer";
 import { queryFolder } from "./folder-index/query";
 import { watchFolder } from "./folder-index/watch";
-import { IndexProgressEvent, PageIndexOptions } from "./folder-index/types";
+import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions } from "./folder-index/types";
 
 function parseConcurrency(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -50,6 +50,7 @@ function logProgress(event: IndexProgressEvent): void {
 type SharedCommandOptions = {
   apiKey?: string;
   baseUrl?: string;
+  json?: boolean;
   model?: string;
 };
 
@@ -59,6 +60,21 @@ type IndexCommandOptions = SharedCommandOptions & {
   pageindexPython?: string;
 };
 
+type WatchCommandOptions = IndexCommandOptions & {
+  jsonl?: boolean;
+};
+
+type IndexJsonOutput = {
+  version: 1;
+  command: "index";
+  rootDir: string;
+  outputDir: string;
+  manifestPath: string;
+  rootTreePath: string;
+  generatedAt: string;
+  counts: IndexCounts;
+};
+
 function addLlmOptions(command: Command): Command {
   return command
     .option("--api-key <key>", "OpenAI-compatible API key")
@@ -66,7 +82,50 @@ function addLlmOptions(command: Command): Command {
     .option("--model <model>", "LLM model");
 }
 
-function buildOptions(commandOptions: IndexCommandOptions): PageIndexOptions {
+function writeJson(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
+
+function writeJsonLine(value: unknown): void {
+  console.log(JSON.stringify(value));
+}
+
+function indexCounts(result: IndexFolderResult): IndexCounts {
+  return {
+    total: result.manifest.documents.length,
+    ready: result.ready,
+    failed: result.failed,
+    added: result.added,
+    modified: result.modified,
+    retryFailed: result.retryFailed,
+    unchanged: result.unchanged,
+    deleted: result.deleted
+  };
+}
+
+function indexJsonOutput(result: IndexFolderResult): IndexJsonOutput {
+  return {
+    version: 1,
+    command: "index",
+    rootDir: result.manifest.rootDir,
+    outputDir: result.outputDir,
+    manifestPath: result.manifestPath,
+    rootTreePath: result.rootTreePath,
+    generatedAt: result.manifest.generatedAt,
+    counts: indexCounts(result)
+  };
+}
+
+function logProgressAsJsonLine(event: IndexProgressEvent): void {
+  writeJsonLine({
+    version: 1,
+    timestamp: new Date().toISOString(),
+    type: "index-progress",
+    event
+  });
+}
+
+function buildOptions(commandOptions: IndexCommandOptions, progress: (event: IndexProgressEvent) => void = logProgress): PageIndexOptions {
   return {
     apiKey: commandOptions.apiKey,
     baseUrl: commandOptions.baseUrl,
@@ -74,7 +133,7 @@ function buildOptions(commandOptions: IndexCommandOptions): PageIndexOptions {
     model: commandOptions.model,
     outputDir: commandOptions.outputDir,
     pythonPath: commandOptions.pageindexPython,
-    progress: logProgress
+    progress
   };
 }
 
@@ -98,9 +157,14 @@ async function main(): Promise<void> {
       .option("-c, --concurrency <number>", "PageIndex concurrency", parseConcurrency)
       .option("-o, --output-dir <folder>", "folder for ragbox index files")
       .option("--pageindex-python <path>", "Python executable used to run PageIndex")
+      .option("--json", "print a stable JSON result")
   )
     .action(async (folder: string, commandOptions: IndexCommandOptions) => {
       const result = await indexFolder(folder, buildOptions(commandOptions));
+      if (commandOptions.json) {
+        writeJson(indexJsonOutput(result));
+        return;
+      }
       console.log(`Indexed ${folder}`);
       console.log(`ready=${result.ready}`);
       console.log(`failed=${result.failed}`);
@@ -116,10 +180,15 @@ async function main(): Promise<void> {
       .command("query")
       .argument("<target>", "docs folder or ragbox output directory")
       .argument("<question>", "question to answer")
+      .option("--json", "print a stable JSON result with selections and sources")
   )
     .action(async (target: string, question: string, commandOptions: SharedCommandOptions) => {
-      const answer = await queryFolder(target, question, buildQueryOptions(commandOptions));
-      console.log(answer);
+      const result = await queryFolder(target, question, buildQueryOptions(commandOptions));
+      if (commandOptions.json) {
+        writeJson(result);
+        return;
+      }
+      console.log(result.answer);
     });
 
   addLlmOptions(
@@ -129,9 +198,14 @@ async function main(): Promise<void> {
       .option("-c, --concurrency <number>", "PageIndex concurrency", parseConcurrency)
       .option("-o, --output-dir <folder>", "folder for ragbox index files")
       .option("--pageindex-python <path>", "Python executable used to run PageIndex")
+      .option("--jsonl", "print stable JSON Lines watch and index progress events")
   )
-    .action(async (folder: string, commandOptions: IndexCommandOptions) => {
-      await watchFolder(folder, buildOptions(commandOptions));
+    .action(async (folder: string, commandOptions: WatchCommandOptions) => {
+      const options = buildOptions(commandOptions, commandOptions.jsonl ? logProgressAsJsonLine : logProgress);
+      if (commandOptions.jsonl) {
+        options.watchProgress = writeJsonLine;
+      }
+      await watchFolder(folder, options);
     });
 
   await program.parseAsync(process.argv);

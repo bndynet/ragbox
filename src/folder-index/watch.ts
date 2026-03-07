@@ -4,15 +4,51 @@ import { loadPageIndexConfig } from "./config";
 import { indexFolder } from "./indexer";
 import { resolvePageIndexDir } from "./manifest";
 import { isStrictSubPath, isSubPath } from "./path-utils";
-import { PageIndexOptions } from "./types";
+import { IndexCounts, IndexFolderResult, PageIndexOptions, WatchProgressEvent } from "./types";
 
 const WATCH_IGNORED = /(^|[/\\])(node_modules|\.git|\.pageindex|dist|build)([/\\]|$)/;
+
+type WatchProgressEventInput = WatchProgressEvent extends infer Event
+  ? Event extends WatchProgressEvent
+    ? Omit<Event, "version" | "timestamp">
+    : never
+  : never;
+
+function toIndexCounts(result: IndexFolderResult): IndexCounts {
+  return {
+    total: result.manifest.documents.length,
+    ready: result.ready,
+    failed: result.failed,
+    added: result.added,
+    modified: result.modified,
+    retryFailed: result.retryFailed,
+    unchanged: result.unchanged,
+    deleted: result.deleted
+  };
+}
+
+function createWatchEvent(event: WatchProgressEventInput): WatchProgressEvent {
+  return {
+    version: 1,
+    timestamp: new Date().toISOString(),
+    ...event
+  } as WatchProgressEvent;
+}
+
+function reportWatchProgress(options: PageIndexOptions, event: WatchProgressEvent): void {
+  try {
+    options.watchProgress?.(event);
+  } catch {
+    // Watch progress reporting must never change watch behavior.
+  }
+}
 
 export async function watchFolder(folder: string, options: PageIndexOptions = {}): Promise<void> {
   const rootDir = path.resolve(folder);
   const config = loadPageIndexConfig(options);
   const outputDir = resolvePageIndexDir(rootDir, config.outputDir);
   const shouldIgnoreOutputDir = isStrictSubPath(rootDir, outputDir);
+  const hasStructuredProgress = Boolean(config.watchProgress);
   let timer: NodeJS.Timeout | undefined;
   let running = false;
   let pending = false;
@@ -30,7 +66,7 @@ export async function watchFolder(folder: string, options: PageIndexOptions = {}
     return isSubPath(outputDir, absoluteCandidatePath);
   }
 
-  async function runIndex(): Promise<void> {
+  async function runIndex(reason: "initial" | "change"): Promise<void> {
     if (running) {
       pending = true;
       return;
@@ -38,36 +74,91 @@ export async function watchFolder(folder: string, options: PageIndexOptions = {}
 
     running = true;
     pending = false;
+    reportWatchProgress(
+      config,
+      createWatchEvent({
+        type: "watch-index-start",
+        rootDir,
+        outputDir,
+        reason
+      })
+    );
 
     try {
       const result = await indexFolder(rootDir, options);
-      console.log(
-        `Indexed ${rootDir}: ready=${result.ready}, failed=${result.failed}, added=${result.added}, modified=${result.modified}, deleted=${result.deleted}, unchanged=${result.unchanged}`
+      reportWatchProgress(
+        config,
+        createWatchEvent({
+          type: "watch-index-done",
+          rootDir,
+          outputDir,
+          reason,
+          result: toIndexCounts(result),
+          manifestPath: result.manifestPath,
+          rootTreePath: result.rootTreePath
+        })
       );
+      if (!hasStructuredProgress) {
+        console.log(
+          `Indexed ${rootDir}: ready=${result.ready}, failed=${result.failed}, added=${result.added}, modified=${result.modified}, deleted=${result.deleted}, unchanged=${result.unchanged}`
+        );
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`Index failed: ${message}`);
+      reportWatchProgress(
+        config,
+        createWatchEvent({
+          type: "watch-index-failed",
+          rootDir,
+          outputDir,
+          reason,
+          error: message
+        })
+      );
+      if (!hasStructuredProgress) {
+        console.error(`Index failed: ${message}`);
+      }
     } finally {
       running = false;
       if (pending) {
-        await runIndex();
+        await runIndex("change");
       }
     }
   }
 
-  function scheduleIndex(eventName: string, changedPath: string): void {
-    console.log(`${eventName}: ${changedPath}`);
+  function scheduleIndex(eventName: "add" | "change" | "unlink", changedPath: string): void {
+    reportWatchProgress(
+      config,
+      createWatchEvent({
+        type: "watch-file-event",
+        rootDir,
+        outputDir,
+        eventName,
+        path: changedPath
+      })
+    );
+    if (!hasStructuredProgress) {
+      console.log(`${eventName}: ${changedPath}`);
+    }
 
     if (timer) {
       clearTimeout(timer);
     }
 
     timer = setTimeout(() => {
-      void runIndex();
+      void runIndex("change");
     }, 500);
   }
 
-  await runIndex();
+  reportWatchProgress(
+    config,
+    createWatchEvent({
+      type: "watch-start",
+      rootDir,
+      outputDir
+    })
+  );
+  await runIndex("initial");
 
   const watcher = chokidar.watch(["**/*.md", "**/*.mdx"], {
     cwd: rootDir,
@@ -87,6 +178,14 @@ export async function watchFolder(folder: string, options: PageIndexOptions = {}
         clearTimeout(timer);
       }
       await watcher.close();
+      reportWatchProgress(
+        config,
+        createWatchEvent({
+          type: "watch-stop",
+          rootDir,
+          outputDir
+        })
+      );
       resolve();
     };
 

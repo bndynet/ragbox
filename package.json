@@ -3,12 +3,20 @@
   "version": "0.1.0",
   "description": "RAG toolbox CLI for folder-level PageIndex indexing and querying.",
   "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
   "bin": {
     "ragbox": "./dist/src/cli.js"
   },
   "files": [
     "dist/src/cli.js",
     "dist/src/index.js",
+    "dist/src/index.d.ts",
     "dist/src/folder-index",
     "README.md",
     "README.zh-CN.md"

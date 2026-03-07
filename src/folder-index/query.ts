@@ -1,8 +1,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { loadPageIndexConfig } from "./config";
 import { chatCompletion } from "./llm-client";
 import { MANIFEST_FILE, PAGEINDEX_DIR, resolveDocumentIndexPath, ROOT_TREE_FILE } from "./manifest";
-import { DocumentRecord, Manifest, PageIndexOptions, RootTreeNode } from "./types";
+import {
+  DocumentRecord,
+  Manifest,
+  PageIndexOptions,
+  QueryResult,
+  QuerySelectedDocument,
+  QuerySelectedNode,
+  QuerySource,
+  QueryTimings,
+  RootTreeNode
+} from "./types";
 
 type JsonObject = Record<string, unknown>;
 
@@ -325,40 +336,88 @@ ${JSON.stringify(treeWithoutText, null, 2)}`;
   return Array.isArray(parsed.nodes) ? parsed.nodes.filter((id) => typeof id === "string") : [];
 }
 
-export async function queryFolder(target: string, question: string, options: PageIndexOptions = {}): Promise<string> {
+function elapsedSince(startedAt: number): number {
+  return Date.now() - startedAt;
+}
+
+export async function queryFolder(target: string, question: string, options: PageIndexOptions = {}): Promise<QueryResult> {
+  const totalStartedAt = Date.now();
+  const timings: QueryTimings = {
+    resolve: 0,
+    selectDocuments: 0,
+    selectNodes: 0,
+    answer: 0,
+    total: 0
+  };
+  const warnings: string[] = [];
+  const selectedDocuments: QuerySelectedDocument[] = [];
+  const selectedNodes: QuerySelectedNode[] = [];
+  const sources: QuerySource[] = [];
+  const config = loadPageIndexConfig(options);
+  const resolvedTarget = path.resolve(target);
+
   logVerbose(`query resolve target=${path.resolve(target)}`);
+  const resolveStartedAt = Date.now();
   const location = await resolveQueryIndexLocation(target);
   logVerbose(`query index root=${location.rootDir} output=${location.outputDir ?? "(default)"}`);
   const manifest = await readJson<Manifest>(location.manifestPath);
   const rootTree = await readJson<RootTreeNode>(location.rootTreePath);
+  timings.resolve = elapsedSince(resolveStartedAt);
+
   const documentNodes = findDocumentNodes(rootTree);
   const manifestByDocId = new Map<string, DocumentRecord>(manifest.documents.map((record) => [record.docId, record]));
   logVerbose(`query select documents total=${manifest.documents.length}`);
+  const selectDocumentsStartedAt = Date.now();
   const selectedDocumentIds = await selectDocuments(question, rootTree, options);
+  timings.selectDocuments = elapsedSince(selectDocumentsStartedAt);
   logVerbose(`query selected documents count=${selectedDocumentIds.length} ids=${selectedDocumentIds.join(",")}`);
-  const contextParts: string[] = [];
 
   for (const docId of selectedDocumentIds) {
     const documentNode = documentNodes.get(docId);
     const manifestRecord = manifestByDocId.get(docId);
     const indexPath = documentNode?.index_path ?? manifestRecord?.indexPath;
+    const available = Boolean(documentNode && manifestRecord && indexPath && manifestRecord.status === "ready");
 
-    if (!documentNode || !manifestRecord || !indexPath || manifestRecord.status !== "ready") {
+    selectedDocuments.push({
+      docId,
+      available,
+      path: manifestRecord?.path ?? documentNode?.path,
+      title: manifestRecord?.title ?? documentNode?.title,
+      status: manifestRecord?.status,
+      indexPath
+    });
+
+    if (!available || !documentNode || !manifestRecord || !indexPath) {
       logVerbose(`query skip unavailable document id=${docId}`);
+      warnings.push(`Selected document is unavailable: ${docId}`);
       continue;
     }
 
     logVerbose(`query read pageindex path=${manifestRecord.path}`);
     const pageIndexJson = await readJson<unknown>(resolveDocumentIndexPath(location.rootDir, indexPath, location.outputDir));
     logVerbose(`query select nodes path=${manifestRecord.path}`);
+    const selectNodesStartedAt = Date.now();
     const selectedNodeIds = await selectPageIndexNodes(question, stripText(pageIndexJson), options);
+    timings.selectNodes += elapsedSince(selectNodesStartedAt);
     logVerbose(`query selected nodes path=${manifestRecord.path} count=${selectedNodeIds.length} ids=${selectedNodeIds.join(",")}`);
     const nodeMap = buildNodeMap(pageIndexJson);
     let sourceMarkdown: string | undefined;
 
     for (const nodeId of selectedNodeIds) {
       const node = nodeMap.get(nodeId);
+      const reference = `${manifestRecord.path}#${nodeId}`;
+      const selectedNode: QuerySelectedNode = {
+        docId,
+        path: manifestRecord.path,
+        nodeId,
+        found: Boolean(node),
+        hasText: false,
+        reference
+      };
+
       if (!node) {
+        selectedNodes.push(selectedNode);
+        warnings.push(`Selected node was not found: ${reference}`);
         continue;
       }
 
@@ -371,15 +430,28 @@ export async function queryFolder(target: string, question: string, options: Pag
         }
       }
       if (!text) {
+        selectedNodes.push(selectedNode);
+        warnings.push(`Selected node has no extractable text: ${reference}`);
         continue;
       }
 
-      contextParts.push(`Source: ${manifestRecord.path}#${nodeId}\n${text}`);
+      selectedNode.hasText = true;
+      selectedNodes.push(selectedNode);
+      sources.push({
+        path: manifestRecord.path,
+        nodeId,
+        reference,
+        text
+      });
     }
   }
 
-  const context = contextParts.length > 0 ? contextParts.join("\n\n---\n\n") : "(no relevant context found)";
-  logVerbose(`query final answer contextParts=${contextParts.length}`);
+  if (sources.length === 0) {
+    warnings.push("No relevant context was extracted from the selected index nodes.");
+  }
+
+  const context = sources.length > 0 ? sources.map((source) => `Source: ${source.reference}\n${source.text}`).join("\n\n---\n\n") : "(no relevant context found)";
+  logVerbose(`query final answer contextParts=${sources.length}`);
   const finalPrompt = `Answer the user question using only the provided context.
 If the context is insufficient, say that the indexed documents do not contain enough information.
 Include source references using the file path and node_id when possible.
@@ -388,5 +460,23 @@ ${question}
 Context:
 ${context}`;
 
-  return await chatCompletion([{ role: "user", content: finalPrompt }], options);
+  const answerStartedAt = Date.now();
+  const answer = await chatCompletion([{ role: "user", content: finalPrompt }], options);
+  timings.answer = elapsedSince(answerStartedAt);
+  timings.total = elapsedSince(totalStartedAt);
+
+  return {
+    version: 1,
+    target: resolvedTarget,
+    rootDir: location.rootDir,
+    outputDir: location.outputDir ?? path.join(location.rootDir, PAGEINDEX_DIR),
+    question,
+    model: config.model,
+    answer,
+    selectedDocuments,
+    selectedNodes,
+    sources,
+    warnings,
+    timingsMs: timings
+  };
 }

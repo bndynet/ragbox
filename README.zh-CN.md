@@ -102,12 +102,37 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
 ```bash
 ragbox index ./docs
 ragbox index ./docs --output-dir ./.ragbox-index
+ragbox index ./docs --output-dir ./.ragbox-index --json
 ragbox index ./docs --output-dir /var/lib/ragbox/docs-index --concurrency 2
 ragbox index ./docs --pageindex-python /opt/venvs/pageindex/bin/python
 ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 ```
 
 它会扫描 `**/*.md` 和 `**/*.mdx`，计算文件 hash，只重新索引新增、修改、之前失败的文件，并跳过未变化的 ready 文件。
+
+使用 `--json` 可以输出带版本号的机器可读结果，包含输出路径和统计信息：
+
+```json
+{
+  "version": 1,
+  "command": "index",
+  "rootDir": "/repo/docs",
+  "outputDir": "/repo/.ragbox-index",
+  "manifestPath": "/repo/.ragbox-index/manifest.json",
+  "rootTreePath": "/repo/.ragbox-index/root-tree.json",
+  "generatedAt": "2026-01-01T00:00:00.000Z",
+  "counts": {
+    "total": 12,
+    "ready": 12,
+    "failed": 0,
+    "added": 12,
+    "modified": 0,
+    "retryFailed": 0,
+    "unchanged": 0,
+    "deleted": 0
+  }
+}
+```
 
 ### `ragbox query <target> <question>`
 
@@ -118,6 +143,7 @@ ragbox query ./docs "怎么配置认证？"
 ragbox query ./.ragbox-index "部署步骤是什么？"
 ragbox query ./docs/.pageindex "怎么配置认证？"
 ragbox query ./.ragbox-index "怎么配置认证？" --model gpt-4o-mini --api-key sk-...
+ragbox query ./.ragbox-index "怎么配置认证？" --json
 ```
 
 这里建议使用和索引时相同的 `--base-url`，通常是 OpenAI-compatible 根地址，例如 `https://api.openai.com/v1`。如果某些代理只能提供完整接口地址，`query` 也兼容完整的 `/chat/completions` URL。
@@ -142,6 +168,15 @@ indexes/
 5. 回到完整 JSON 中取出选中节点的 `text`
 6. 把这些文本拼成上下文，让 LLM 生成最终答案
 
+使用 `--json` 可以输出带版本号的 `QueryResult` 契约：
+
+- `answer`：最终回答文本
+- `selectedDocuments`：从 `root-tree.json` 中选中的文档
+- `selectedNodes`：每篇文档中选中的 PageIndex 节点
+- `sources`：最终回答使用的来源引用和节点文本
+- `warnings`：不可用文档、缺失节点或空上下文等提醒
+- `timingsMs`：解析、选择和生成回答的耗时
+
 ### `ragbox watch <folder>`
 
 先执行一次索引，然后监听文档变化并增量更新。
@@ -151,9 +186,12 @@ ragbox watch ./docs
 ragbox watch ./docs --output-dir ./.ragbox-index
 ragbox watch ./docs --output-dir /var/lib/ragbox/docs-index --concurrency 2
 ragbox watch ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
+ragbox watch ./docs --output-dir ./.ragbox-index --jsonl
 ```
 
 `watch` 监听 `.md` 和 `.mdx` 文件的新增、修改、删除。它会忽略 `node_modules`、`.git`、`.pageindex`、`dist`、`build`，以及位于文档目录内的自定义输出目录。
+
+使用 `--jsonl` 可以为集成场景输出带版本号的 JSON Lines 事件流。事件包括 `watch-start`、`watch-file-event`、`watch-index-start`、`watch-index-done`、`watch-index-failed`、`watch-stop` 和 `index-progress`。
 
 ## 输出目录
 
@@ -209,10 +247,13 @@ ragbox query /var/lib/ragbox/docs-index "怎么配置认证？"
 ```js
 const { queryFolder } = require("@bndynet/ragbox");
 
-const answer = await queryFolder(
+const result = await queryFolder(
   "/var/lib/ragbox/docs-index",
   "怎么配置认证？"
 );
+
+console.log(result.answer);
+console.log(result.sources);
 ```
 
 ## 真实 E2E 验证

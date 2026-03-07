@@ -106,12 +106,37 @@ Indexes Markdown/MDX files.
 ```bash
 ragbox index ./docs
 ragbox index ./docs --output-dir ./.ragbox-index
+ragbox index ./docs --output-dir ./.ragbox-index --json
 ragbox index ./docs --output-dir /var/lib/ragbox/docs-index --concurrency 2
 ragbox index ./docs --pageindex-python /opt/venvs/pageindex/bin/python
 ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 ```
 
 `index` scans `**/*.md` and `**/*.mdx`, hashes files, re-indexes new/modified/failed files, skips unchanged ready files, and removes deleted files from the manifest.
+
+Use `--json` to print a versioned machine-readable result with output paths and counts:
+
+```json
+{
+  "version": 1,
+  "command": "index",
+  "rootDir": "/repo/docs",
+  "outputDir": "/repo/.ragbox-index",
+  "manifestPath": "/repo/.ragbox-index/manifest.json",
+  "rootTreePath": "/repo/.ragbox-index/root-tree.json",
+  "generatedAt": "2026-01-01T00:00:00.000Z",
+  "counts": {
+    "total": 12,
+    "ready": 12,
+    "failed": 0,
+    "added": 12,
+    "modified": 0,
+    "retryFailed": 0,
+    "unchanged": 0,
+    "deleted": 0
+  }
+}
+```
 
 ### `ragbox query <target> <question>`
 
@@ -122,6 +147,7 @@ ragbox query ./docs "How do I configure authentication?"
 ragbox query ./.ragbox-index "What are the deployment steps?"
 ragbox query ./docs/.pageindex "How do I configure authentication?"
 ragbox query ./.ragbox-index "How do I configure authentication?" --model gpt-4o-mini --api-key sk-...
+ragbox query ./.ragbox-index "How do I configure authentication?" --json
 ```
 
 Use the same `--base-url` value that you use for indexing. It should normally be the OpenAI-compatible root, such as `https://api.openai.com/v1`; `query` also accepts a full `/chat/completions` URL for proxy setups that require it.
@@ -139,6 +165,15 @@ indexes/
 
 `query` reads `root-tree.json`, asks the LLM to choose likely documents, reads their PageIndex JSON, strips `text` fields before node selection, then extracts the selected node text for the final answer.
 
+Use `--json` to print a versioned `QueryResult` contract:
+
+- `answer`: final answer text
+- `selectedDocuments`: document ids selected from `root-tree.json`
+- `selectedNodes`: PageIndex nodes selected per document
+- `sources`: source references and extracted node text used as answer context
+- `warnings`: unavailable documents, missing nodes, or empty context
+- `timingsMs`: resolve, selection, and answer timings
+
 ### `ragbox watch <folder>`
 
 Runs an initial index and keeps it updated.
@@ -148,9 +183,12 @@ ragbox watch ./docs
 ragbox watch ./docs --output-dir ./.ragbox-index
 ragbox watch ./docs --output-dir /var/lib/ragbox/docs-index --concurrency 2
 ragbox watch ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
+ragbox watch ./docs --output-dir ./.ragbox-index --jsonl
 ```
 
 Watch mode listens for Markdown/MDX add, change, and unlink events. It ignores `node_modules`, `.git`, `.pageindex`, `dist`, `build`, and a custom output directory when it is inside the watched root.
+
+Use `--jsonl` to stream versioned JSON Lines events for integrations. The stream includes `watch-start`, `watch-file-event`, `watch-index-start`, `watch-index-done`, `watch-index-failed`, `watch-stop`, and `index-progress` events.
 
 ## Output
 
@@ -202,10 +240,13 @@ Library use:
 ```js
 const { queryFolder } = require("@bndynet/ragbox");
 
-const answer = await queryFolder(
+const result = await queryFolder(
   "/var/lib/ragbox/docs-index",
   "How do I configure authentication?"
 );
+
+console.log(result.answer);
+console.log(result.sources);
 ```
 
 ## Real E2E Validation

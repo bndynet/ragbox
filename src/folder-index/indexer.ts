@@ -35,6 +35,8 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
   const rootDir = path.resolve(folder);
   const config = loadPageIndexConfig(options);
   const outputDir = resolvePageIndexDir(rootDir, config.outputDir);
+  const manifestPath = path.join(outputDir, "manifest.json");
+  const rootTreePath = path.join(outputDir, "root-tree.json");
   const excludedDirs = isStrictSubPath(rootDir, outputDir) ? [outputDir] : [];
   const previousManifest = await readManifest(rootDir, config.outputDir);
   const scannedFiles = await scanMarkdownFiles(rootDir, { excludedDirs });
@@ -128,13 +130,16 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
   await writeFileState(rootDir, manifest, config.outputDir);
   reportProgress(config, {
     type: "write",
-    manifestPath: path.join(outputDir, "manifest.json"),
-    rootTreePath: path.join(outputDir, "root-tree.json")
+    manifestPath,
+    rootTreePath
   });
 
   return {
     manifest,
     rootTree,
+    outputDir,
+    manifestPath,
+    rootTreePath,
     added: diff.added.length,
     modified: diff.modified.length,
     retryFailed: diff.retryFailed.length,
