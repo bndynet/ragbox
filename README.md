@@ -120,6 +120,8 @@ For multiple documentation directories, name each one under `sources`:
 }
 ```
 
+A runnable copy of this multi-source layout lives in `./examples/ragbox.config.json`.
+
 Index named sources separately, then query globally or narrow to selected sources:
 
 ```bash
@@ -440,6 +442,6 @@ npm run test:e2e
 
 `.env.e2e.local` is ignored by git. Use `npm run test:e2e:raw` only when you intentionally want to bypass the helper script.
 
-The test defaults to `./examples`, runs `ragbox index ./examples --output-dir ./examples/.pageindex`, queries the generated JSON directory, then queries the docs directory itself. It prints live stage logs, per-document index progress, query progress, and heartbeat lines while long commands are still running. `./examples` currently contains 100 Markdown demo documents; for a faster OAuth-only check, set `RAGBOX_E2E_DOCS_DIR=./examples/authentication/oauth2`.
+The test defaults to `./examples`, runs `ragbox index ./examples --output-dir ./examples/.pageindex`, queries the generated JSON directory, then queries the docs directory itself. It prints live stage logs, per-document index progress, query progress, and heartbeat lines while long commands are still running. `./examples` contains a small multi-source fixture with `docs`, `api`, and `web` directories; for a faster OAuth-only check, set `RAGBOX_E2E_DOCS_DIR=./examples/packages/api/docs/authentication`.
 
 The default e2e question is intentionally fuzzy: "What problem does PKCE solve in OAuth 2.0, and how does it reduce authorization code interception risk?" The final answer is printed in the e2e log for both the output-directory query and the docs-directory query.

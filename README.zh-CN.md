@@ -118,6 +118,8 @@ ragbox --config ./ragbox.config.json index
 }
 ```
 
+这个多 source 目录结构的可运行示例在 `./examples/ragbox.config.json`。
+
 命名 source 分别索引，query 时可以全局查，也可以限定 source：
 
 ```bash
@@ -449,6 +451,6 @@ npm run test:e2e
 
 `.env.e2e.local` 已被 git ignore。只有在你明确想绕过脚本时，才使用 `npm run test:e2e:raw`。
 
-这个测试默认使用 `./examples`，执行 `ragbox index ./examples --output-dir ./examples/.pageindex`，查询生成的 JSON 索引目录，然后再查询 docs 目录本身。运行时会打印实时阶段日志、逐文档索引进度、query 进度，以及长时间命令的心跳日志。`./examples` 现在包含 100 个 Markdown demo 文档；如果你想先快速验证 OAuth 文档，可以设置 `RAGBOX_E2E_DOCS_DIR=./examples/authentication/oauth2`。
+这个测试默认使用 `./examples`，执行 `ragbox index ./examples --output-dir ./examples/.pageindex`，查询生成的 JSON 索引目录，然后再查询 docs 目录本身。运行时会打印实时阶段日志、逐文档索引进度、query 进度，以及长时间命令的心跳日志。`./examples` 现在包含一个小型 multi-source fixture，里面有 `docs`、`api` 和 `web` 目录；如果你想先快速验证 OAuth 文档，可以设置 `RAGBOX_E2E_DOCS_DIR=./examples/packages/api/docs/authentication`。
 
 默认 e2e 问题是一个英文模糊问题：“What problem does PKCE solve in OAuth 2.0, and how does it reduce authorization code interception risk?”。e2e 日志会分别打印从索引目录 query 和从 docs 目录 query 得到的最终答案。

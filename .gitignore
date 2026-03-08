@@ -1,6 +1,6 @@
 node_modules/
 dist/
 .pageindex/
+.ragbox-index/
 *.log
 .env.e2e.local
-examples/

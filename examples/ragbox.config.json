@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "pageIndex": {
+    "cli": "/path/to/PageIndex/run_pageindex.py",
+    "concurrency": 1
+  },
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini"
+  },
+  "sources": {
+    "docs": {
+      "rootDir": "./docs",
+      "outputDir": "./.ragbox-index/docs"
+    },
+    "api": {
+      "rootDir": "./packages/api/docs",
+      "outputDir": "./.ragbox-index/api"
+    },
+    "web": {
+      "rootDir": "./apps/web/content",
+      "outputDir": "./.ragbox-index/web",
+      "include": ["**/*.md", "**/*.mdx"],
+      "exclude": ["**/draft/**"]
+    }
+  }
+}
