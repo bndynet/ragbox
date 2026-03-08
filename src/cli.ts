@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import { Command } from "commander";
-import { resolveRagboxConfig, writeDefaultRagboxConfig } from "./config-file";
+import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig, writeDefaultRagboxConfig } from "./config-file";
 import { indexFolder } from "./folder-index/indexer";
+import { queryMultipleIndexes, MultiQueryTarget } from "./folder-index/multi-query";
 import { queryFolder } from "./folder-index/query";
 import { watchFolder } from "./folder-index/watch";
 import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions } from "./folder-index/types";
@@ -68,6 +69,10 @@ type WatchCommandOptions = IndexCommandOptions & {
   jsonl?: boolean;
 };
 
+type QueryCommandOptions = SharedCommandOptions & {
+  allSources?: boolean;
+};
+
 type InitCommandOptions = {
   docsDir?: string;
   force?: boolean;
@@ -94,7 +99,7 @@ function addLlmOptions(command: Command): Command {
 }
 
 function addProjectOptions(command: Command): Command {
-  return command.option("--source <name>", "ragbox config source");
+  return command.option("--source <name>", "ragbox config source; query accepts comma-separated names");
 }
 
 function writeJson(value: unknown): void {
@@ -197,6 +202,13 @@ function buildQueryOptions(configOptions: PageIndexOptions, commandOptions: Shar
   });
 }
 
+function parseSourceNames(source: string | undefined): string[] {
+  return (source ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
 function requireFolder(folder: string | undefined, commandName: string): string {
   if (!folder) {
     throw new Error(`Missing folder. Pass a folder argument or configure a source rootDir before running ragbox ${commandName}.`);
@@ -225,6 +237,70 @@ async function pathExists(value: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function loadConfiguredQueryTargets(command: Command, commandOptions: QueryCommandOptions): Promise<{
+  answerOptions: PageIndexOptions;
+  targets: MultiQueryTarget[];
+}> {
+  const globalOptions = command.parent?.opts<{ config?: string }>() ?? {};
+  if (commandOptions.allSources && commandOptions.source) {
+    throw new Error("Use either --source or --all-sources, not both.");
+  }
+
+  let sourceNames = parseSourceNames(commandOptions.source);
+  if (commandOptions.allSources) {
+    const { config } = await readRagboxConfig(globalOptions.config);
+    sourceNames = listRagboxConfigSourceNames(config);
+    if (sourceNames.length === 0) {
+      throw new Error("No configured sources found. Add docs or sources to ragbox.config.json.");
+    }
+  }
+
+  const targets: MultiQueryTarget[] = [];
+  let answerOptions: PageIndexOptions | undefined;
+
+  for (const sourceName of sourceNames) {
+    const resolved = await resolveRagboxConfig({
+      configPath: globalOptions.config,
+      source: sourceName
+    });
+    const target = resolved.pageIndexOptions.outputDir ?? resolved.rootDir;
+    if (!target) {
+      throw new Error(`Source does not define outputDir or rootDir: ${sourceName}`);
+    }
+
+    const options = buildQueryOptions(resolved.pageIndexOptions, commandOptions);
+    answerOptions ??= options;
+    targets.push({
+      name: sourceName,
+      target,
+      options
+    });
+  }
+
+  return {
+    answerOptions: answerOptions ?? buildQueryOptions({}, commandOptions),
+    targets
+  };
+}
+
+async function shouldQueryAllSourcesByDefault(
+  command: Command,
+  target: string | undefined,
+  question: string | undefined,
+  sourceNames: string[]
+): Promise<boolean> {
+  if (!target || question || sourceNames.length > 0) {
+    return false;
+  }
+  if (await pathExists(target)) {
+    return false;
+  }
+
+  const globalOptions = command.parent?.opts<{ config?: string }>() ?? {};
+  const { config } = await readRagboxConfig(globalOptions.config);
+  return listRagboxConfigSourceNames(config).length > 1;
 }
 
 async function main(): Promise<void> {
@@ -289,17 +365,37 @@ async function main(): Promise<void> {
       .command("query")
       .argument("[target]", "docs folder or ragbox output directory")
       .argument("[question]", "question to answer")
+      .option("--all-sources", "query every configured source and synthesize one answer")
       .option("--json", "print a stable JSON result with selections and sources")
     )
   )
-    .action(async (target: string | undefined, question: string | undefined, commandOptions: SharedCommandOptions, command: Command) => {
-      const loaded = await loadCommandConfig(command, commandOptions);
+    .action(async (target: string | undefined, question: string | undefined, commandOptions: QueryCommandOptions, command: Command) => {
+      const sourceNames = parseSourceNames(commandOptions.source);
+      const implicitAllSources = await shouldQueryAllSourcesByDefault(command, target, question, sourceNames);
+      if (commandOptions.allSources || sourceNames.length > 1 || implicitAllSources) {
+        if (question) {
+          throw new Error("Multi-source query uses configured sources; pass only the question argument.");
+        }
+
+        const multiSourceOptions = implicitAllSources ? { ...commandOptions, allSources: true } : commandOptions;
+        const loadedSources = await loadConfiguredQueryTargets(command, multiSourceOptions);
+        const result = await queryMultipleIndexes(loadedSources.targets, requireQuestion(target), loadedSources.answerOptions);
+        if (commandOptions.json) {
+          writeJson(result);
+          return;
+        }
+        console.log(result.answer);
+        return;
+      }
+
+      const singleSourceOptions = sourceNames.length === 1 ? { ...commandOptions, source: sourceNames[0] } : commandOptions;
+      const loaded = await loadCommandConfig(command, singleSourceOptions);
       let queryTarget = target;
       let queryQuestion = question;
       const configuredTarget = loaded.options.outputDir ?? loaded.rootDir;
 
       if (!queryQuestion && queryTarget && configuredTarget) {
-        const singleArgIsQuestion = commandOptions.source || !(await pathExists(queryTarget));
+        const singleArgIsQuestion = singleSourceOptions.source || !(await pathExists(queryTarget));
         if (singleArgIsQuestion) {
           queryQuestion = queryTarget;
           queryTarget = undefined;
@@ -307,7 +403,7 @@ async function main(): Promise<void> {
       }
 
       queryTarget ??= configuredTarget;
-      const result = await queryFolder(requireTarget(queryTarget), requireQuestion(queryQuestion), buildQueryOptions(loaded.options, commandOptions));
+      const result = await queryFolder(requireTarget(queryTarget), requireQuestion(queryQuestion), buildQueryOptions(loaded.options, singleSourceOptions));
       if (commandOptions.json) {
         writeJson(result);
         return;

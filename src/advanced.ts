@@ -3,6 +3,7 @@ export * from "./folder-index/config";
 export * from "./folder-index/hash";
 export * from "./folder-index/indexer";
 export * from "./folder-index/manifest";
+export * from "./folder-index/multi-query";
 export * from "./folder-index/pageindex-runner";
 export * from "./folder-index/path-utils";
 export * from "./folder-index/query";

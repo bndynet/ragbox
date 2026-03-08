@@ -211,6 +211,21 @@ function findSource(config: RagboxConfig | undefined, sourceName: string | undef
   return config?.sources?.[sourceName];
 }
 
+export function listRagboxConfigSourceNames(config: RagboxConfig | undefined): string[] {
+  if (!config) {
+    return [];
+  }
+
+  const names = new Set<string>();
+  if (config.docs) {
+    names.add("docs");
+  }
+  for (const sourceName of Object.keys(config.sources ?? {})) {
+    names.add(sourceName);
+  }
+  return [...names];
+}
+
 export async function writeDefaultRagboxConfig(options: WriteDefaultRagboxConfigOptions = {}): Promise<string> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const configPath = path.resolve(cwd, options.configPath ?? RAGBOX_CONFIG_FILE);

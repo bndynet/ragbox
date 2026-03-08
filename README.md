@@ -6,41 +6,10 @@ Structure-first RAG for Markdown/MDX folders.
 
 [中文文档](./README.zh-CN.md)
 
-## Why
-
-Traditional vector RAG usually chunks documents, embeds chunks, and retrieves by vector similarity. `ragbox` starts from document structure:
-
-- one Markdown/MDX file -> one PageIndex tree
-- one docs folder -> one `manifest.json` and one `root-tree.json`
-- query flow -> select documents, select PageIndex nodes, answer from selected node text
-
-No vector database is required for the basic flow.
-
-## Compared With Vector DB RAG
-
-| Area | Vector DB RAG | `ragbox` |
-| --- | --- | --- |
-| Index unit | Text chunks | Markdown/MDX file plus PageIndex nodes |
-| Retrieval signal | Embedding similarity | LLM selection over document and node trees |
-| Storage | Vector database plus document store | Local JSON files under the output directory |
-| Context shape | Flat retrieved chunks | Structured nodes with file paths and node ids |
-| Strength | Fast fuzzy recall across large collections | Preserves document hierarchy and source references |
-| Tradeoff | Requires embedding/index infrastructure | Depends on PageIndex quality and LLM selection |
-
-The two approaches can also be combined: use vector search for broad candidate recall, then use PageIndex trees for structured filtering, context packing, and citations.
-
 ## Install
 
 ```bash
 npm install -g @bndynet/ragbox
-```
-
-Local development:
-
-```bash
-npm install
-npm run build
-npm run ragbox -- --help
 ```
 
 ## Requirements
@@ -120,6 +89,52 @@ ragbox watch --jsonl
 ragbox --config ./ragbox.config.json index
 ```
 
+For multiple documentation directories, name each one under `sources`:
+
+```json
+{
+  "version": 1,
+  "pageIndex": {
+    "cli": "/path/to/PageIndex/run_pageindex.py"
+  },
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini"
+  },
+  "sources": {
+    "docs": {
+      "rootDir": "./docs",
+      "outputDir": "./.ragbox-index/docs"
+    },
+    "api": {
+      "rootDir": "./packages/api/docs",
+      "outputDir": "./.ragbox-index/api"
+    },
+    "web": {
+      "rootDir": "./apps/web/content",
+      "outputDir": "./.ragbox-index/web",
+      "include": ["**/*.md", "**/*.mdx"],
+      "exclude": ["**/draft/**"]
+    }
+  }
+}
+```
+
+Index named sources separately, then query globally or narrow to selected sources:
+
+```bash
+ragbox index --source docs
+ragbox index --source api
+ragbox index --source web
+
+ragbox query "What are the deployment steps?"
+ragbox query --source api "How do I configure authentication?"
+ragbox query --source docs,api "How does authentication work end to end?"
+ragbox query --all-sources "What are the deployment steps?"
+```
+
+When multiple sources are configured, `ragbox query "..."` queries all of them. `--all-sources` is an explicit alias for the same behavior; use `--source` to limit the search.
+
 You can keep environment-specific files too:
 
 ```bash
@@ -194,7 +209,7 @@ Use `--json` to print a versioned machine-readable result with output paths and 
 }
 ```
 
-### `ragbox query <target> <question>`
+### `ragbox query [target] <question>`
 
 Answers from either a docs folder with a default `.pageindex` index, or an existing ragbox output directory.
 
@@ -204,11 +219,14 @@ ragbox query ./.ragbox-index "What are the deployment steps?"
 ragbox query ./docs/.pageindex "How do I configure authentication?"
 ragbox query ./.ragbox-index "How do I configure authentication?" --model gpt-4o-mini --api-key sk-...
 ragbox query ./.ragbox-index "How do I configure authentication?" --json
+ragbox query "What are the deployment steps?"
+ragbox query --source docs,api "How does authentication work end to end?"
+ragbox query --all-sources "What are the deployment steps?"
 ```
 
 Use the same `--base-url` value that you use for indexing. It should normally be the OpenAI-compatible root, such as `https://api.openai.com/v1`; `query` also accepts a full `/chat/completions` URL for proxy setups that require it.
 
-The first argument can be:
+When passing an explicit target, it can be:
 
 - a docs folder containing `.pageindex/manifest.json` and `.pageindex/root-tree.json`
 - an output directory containing:
@@ -221,7 +239,11 @@ indexes/
 
 `query` reads `root-tree.json`, asks the LLM to choose likely documents, reads their PageIndex JSON, strips `text` fields before node selection, then extracts the selected node text for the final answer.
 
-Use `--json` to print a versioned `QueryResult` contract:
+For multiple configured sources, `ragbox query "..."` queries all sources by default. Pass comma-separated names with `--source` to limit the search, or use `--all-sources` when you want the global behavior to be explicit. Multi-source query runs the normal structured query flow per source, then asks the LLM to synthesize one final answer from the selected source excerpts. Source references are prefixed with the source name, for example `api:auth.md#n1`.
+
+Use `--json` to print a versioned result contract. Single-source queries return `QueryResult`; multi-source queries return a result with a fused `answer`, per-source `results`, prefixed `sources`, `warnings`, and `timingsMs`.
+
+Single-source `QueryResult` fields:
 
 - `answer`: final answer text
 - `selectedDocuments`: document ids selected from `root-tree.json`
@@ -339,7 +361,53 @@ const { advanced } = require("@bndynet/ragbox");
 const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-index");
 ```
 
-## Real E2E Validation
+## How It Works
+
+`ragbox` starts from document structure:
+
+- one Markdown/MDX file -> one PageIndex tree
+- one docs folder -> one `manifest.json` and one `root-tree.json`
+- query flow -> select documents, select PageIndex nodes, answer from selected node text
+
+No vector database is required for the basic flow. For Markdown indexing, ragbox asks PageIndex to include `node_id` and `text` by default. During query, `text` is stripped from the node-selection prompt and only added back for the final answer context.
+
+## Compared With Vector DB RAG
+
+Traditional vector RAG usually chunks documents, embeds chunks, and retrieves by vector similarity. `ragbox` preserves the source document hierarchy and lets the LLM select over that structure.
+
+| Area | Vector DB RAG | `ragbox` |
+| --- | --- | --- |
+| Index unit | Text chunks | Markdown/MDX file plus PageIndex nodes |
+| Retrieval signal | Embedding similarity | LLM selection over document and node trees |
+| Storage | Vector database plus document store | Local JSON files under the output directory |
+| Context shape | Flat retrieved chunks | Structured nodes with file paths and node ids |
+| Strength | Fast fuzzy recall across large collections | Preserves document hierarchy and source references |
+| Tradeoff | Requires embedding/index infrastructure | Depends on PageIndex quality and LLM selection |
+
+The two approaches can also be combined: use vector search for broad candidate recall, then use PageIndex trees for structured filtering, context packing, and citations.
+
+## Troubleshooting
+
+- `PAGEINDEX_CLI is required to run PageIndex`: set `PAGEINDEX_CLI=/path/to/run_pageindex.py`.
+- `OPENAI_API_KEY is required for query`: set `OPENAI_API_KEY` or pass `--api-key`.
+- `Expected a docs folder... or a ragbox output directory`: pass either the docs folder with `.pageindex/`, or the output directory itself.
+- `PageIndex completed but no generated JSON result was found`: if your PageIndex CLI does not use the default `--output` flag, set `PAGEINDEX_OUTPUT_ARG` to the supported output-path flag.
+
+## Limitations
+
+- PageIndex must already be installed/configured locally.
+- Query quality depends on PageIndex JSON shape and the configured LLM.
+- The basic flow uses tree selection, not vector search.
+
+## Local Development
+
+```bash
+npm install
+npm run build
+npm run ragbox -- --help
+```
+
+### Real E2E Validation
 
 Use the helper script:
 
@@ -375,18 +443,3 @@ npm run test:e2e
 The test defaults to `./examples`, runs `ragbox index ./examples --output-dir ./examples/.pageindex`, queries the generated JSON directory, then queries the docs directory itself. It prints live stage logs, per-document index progress, query progress, and heartbeat lines while long commands are still running. `./examples` currently contains 100 Markdown demo documents; for a faster OAuth-only check, set `RAGBOX_E2E_DOCS_DIR=./examples/authentication/oauth2`.
 
 The default e2e question is intentionally fuzzy: "What problem does PKCE solve in OAuth 2.0, and how does it reduce authorization code interception risk?" The final answer is printed in the e2e log for both the output-directory query and the docs-directory query.
-
-For Markdown indexing, ragbox asks PageIndex to include `node_id` and `text` by default. During query, `text` is stripped from the node-selection prompt and only added back for the final answer context.
-
-## Troubleshooting
-
-- `PAGEINDEX_CLI is required to run PageIndex`: set `PAGEINDEX_CLI=/path/to/run_pageindex.py`.
-- `OPENAI_API_KEY is required for query`: set `OPENAI_API_KEY` or pass `--api-key`.
-- `Expected a docs folder... or a ragbox output directory`: pass either the docs folder with `.pageindex/`, or the output directory itself.
-- `PageIndex completed but no generated JSON result was found`: if your PageIndex CLI does not use the default `--output` flag, set `PAGEINDEX_OUTPUT_ARG` to the supported output-path flag.
-
-## Limitations
-
-- PageIndex must already be installed/configured locally.
-- Query quality depends on PageIndex JSON shape and the configured LLM.
-- The basic flow uses tree selection, not vector search.

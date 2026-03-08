@@ -2,39 +2,10 @@
 
 `ragbox` 是一个面向 Markdown/MDX 文档目录的结构化 RAG 工具。它把文档目录索引成本地 PageIndex JSON，然后用 OpenAI-compatible 模型基于索引回答问题。
 
-核心思路：
-
-- 一个 `.md`/`.mdx` 文件生成一棵 PageIndex 树
-- 一个文档目录生成一个 `manifest.json` 和一个 `root-tree.json`
-- 查询时先选相关文档，再选相关节点，最后只用选中节点的正文回答
-
-基础流程不需要向量数据库。
-
-## 与传统 Vector DB RAG 的对比
-
-| 维度 | Vector DB RAG | `ragbox` |
-| --- | --- | --- |
-| 索引单位 | 文本 chunk | Markdown/MDX 文件和 PageIndex 节点 |
-| 检索信号 | 向量相似度 | LLM 基于文档树和节点树选择 |
-| 存储 | 向量数据库加文档存储 | 输出目录下的本地 JSON 文件 |
-| 上下文形态 | 扁平 chunk 列表 | 带文件路径和 node id 的结构化节点 |
-| 优势 | 大规模模糊召回快 | 保留文档层级，引用来源更清晰 |
-| 取舍 | 需要 embedding 和索引基础设施 | 依赖 PageIndex 质量和 LLM 选择效果 |
-
-两种方式也可以组合：先用向量检索做大范围候选召回，再用 PageIndex 树做结构化过滤、上下文组织和引用生成。
-
 ## 安装
 
 ```bash
 npm install -g @bndynet/ragbox
-```
-
-本地开发：
-
-```bash
-npm install
-npm run build
-npm run ragbox -- --help
 ```
 
 ## 前置条件
@@ -116,6 +87,52 @@ ragbox watch --jsonl
 ragbox --config ./ragbox.config.json index
 ```
 
+如果有多个文档目录，在 `sources` 里给每个目录起一个名字：
+
+```json
+{
+  "version": 1,
+  "pageIndex": {
+    "cli": "/path/to/PageIndex/run_pageindex.py"
+  },
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini"
+  },
+  "sources": {
+    "docs": {
+      "rootDir": "./docs",
+      "outputDir": "./.ragbox-index/docs"
+    },
+    "api": {
+      "rootDir": "./packages/api/docs",
+      "outputDir": "./.ragbox-index/api"
+    },
+    "web": {
+      "rootDir": "./apps/web/content",
+      "outputDir": "./.ragbox-index/web",
+      "include": ["**/*.md", "**/*.mdx"],
+      "exclude": ["**/draft/**"]
+    }
+  }
+}
+```
+
+命名 source 分别索引，query 时可以全局查，也可以限定 source：
+
+```bash
+ragbox index --source docs
+ragbox index --source api
+ragbox index --source web
+
+ragbox query "部署步骤是什么？"
+ragbox query --source api "怎么配置认证？"
+ragbox query --source docs,api "认证链路整体是怎样的？"
+ragbox query --all-sources "部署步骤是什么？"
+```
+
+配置了多个 source 时，`ragbox query "..."` 默认查询全部 source。`--all-sources` 是同样行为的显式写法；要缩小范围时再用 `--source`。
+
 也可以按环境拆配置文件：
 
 ```bash
@@ -190,7 +207,7 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 }
 ```
 
-### `ragbox query <target> <question>`
+### `ragbox query [target] <question>`
 
 基于 docs 目录或已有索引目录回答问题。如果传 docs 目录，目录下需要有默认的 `.pageindex` 索引。
 
@@ -200,11 +217,14 @@ ragbox query ./.ragbox-index "部署步骤是什么？"
 ragbox query ./docs/.pageindex "怎么配置认证？"
 ragbox query ./.ragbox-index "怎么配置认证？" --model gpt-4o-mini --api-key sk-...
 ragbox query ./.ragbox-index "怎么配置认证？" --json
+ragbox query "部署步骤是什么？"
+ragbox query --source docs,api "认证链路整体是怎样的？"
+ragbox query --all-sources "部署步骤是什么？"
 ```
 
 这里建议使用和索引时相同的 `--base-url`，通常是 OpenAI-compatible 根地址，例如 `https://api.openai.com/v1`。如果某些代理只能提供完整接口地址，`query` 也兼容完整的 `/chat/completions` URL。
 
-第一个参数可以是：
+显式传 target 时，第一个参数可以是：
 
 - docs 目录，里面有 `.pageindex/manifest.json` 和 `.pageindex/root-tree.json`
 - 索引输出目录，里面有：
@@ -224,7 +244,11 @@ indexes/
 5. 回到完整 JSON 中取出选中节点的 `text`
 6. 把这些文本拼成上下文，让 LLM 生成最终答案
 
-使用 `--json` 可以输出带版本号的 `QueryResult` 契约：
+对多个配置 source，`ragbox query "..."` 默认查询全部 source。可以用 `--source` 传逗号分隔的名字来缩小范围，也可以用 `--all-sources` 显式表达全局查询。多源 query 会对每个 source 执行正常的结构化查询流程，然后让 LLM 基于各 source 选出的片段融合成一个最终回答。来源引用会加上 source 前缀，例如 `api:auth.md#n1`。
+
+使用 `--json` 可以输出带版本号的结果契约。单 source query 返回 `QueryResult`；多 source query 返回融合后的 `answer`、每个 source 的 `results`、带 source 前缀的 `sources`、`warnings` 和 `timingsMs`。
+
+单 source `QueryResult` 字段：
 
 - `answer`：最终回答文本
 - `selectedDocuments`：从 `root-tree.json` 中选中的文档
@@ -346,7 +370,53 @@ const { advanced } = require("@bndynet/ragbox");
 const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-index");
 ```
 
-## 真实 E2E 验证
+## 设计思路
+
+核心思路：
+
+- 一个 `.md`/`.mdx` 文件生成一棵 PageIndex 树
+- 一个文档目录生成一个 `manifest.json` 和一个 `root-tree.json`
+- 查询时先选相关文档，再选相关节点，最后只用选中节点的正文回答
+
+基础流程不需要向量数据库。Markdown 索引时，ragbox 默认会让 PageIndex 生成 `node_id` 和 `text`。query 时只会在“选节点”prompt 里临时去掉 `text`，最终回答阶段仍会使用选中节点的正文。
+
+## 与传统 Vector DB RAG 的对比
+
+传统 Vector RAG 通常会切 chunk、做 embedding，再按向量相似度召回。`ragbox` 则优先保留源文档层级，并让 LLM 基于这棵结构树做选择。
+
+| 维度 | Vector DB RAG | `ragbox` |
+| --- | --- | --- |
+| 索引单位 | 文本 chunk | Markdown/MDX 文件和 PageIndex 节点 |
+| 检索信号 | 向量相似度 | LLM 基于文档树和节点树选择 |
+| 存储 | 向量数据库加文档存储 | 输出目录下的本地 JSON 文件 |
+| 上下文形态 | 扁平 chunk 列表 | 带文件路径和 node id 的结构化节点 |
+| 优势 | 大规模模糊召回快 | 保留文档层级，引用来源更清晰 |
+| 取舍 | 需要 embedding 和索引基础设施 | 依赖 PageIndex 质量和 LLM 选择效果 |
+
+两种方式也可以组合：先用向量检索做大范围候选召回，再用 PageIndex 树做结构化过滤、上下文组织和引用生成。
+
+## 常见问题
+
+- `PAGEINDEX_CLI is required to run PageIndex`：设置 `PAGEINDEX_CLI=/path/to/run_pageindex.py`
+- `OPENAI_API_KEY is required for query`：设置 `OPENAI_API_KEY` 或传 `--api-key`
+- `Expected a docs folder... or a ragbox output directory`：`query` 的第一个参数可以传带 `.pageindex/` 的 docs 目录，也可以直接传索引输出目录
+- `PageIndex completed but no generated JSON result was found`：如果你的 PageIndex CLI 不使用默认的 `--output` 参数名，把 `PAGEINDEX_OUTPUT_ARG` 设置成它支持的输出路径参数名。
+
+## 限制
+
+- 需要你本地已经安装并配置 PageIndex
+- 查询质量依赖 PageIndex JSON 结构和所使用的 LLM
+- 当前基础流程是树结构选择，不是向量检索
+
+## 本地开发
+
+```bash
+npm install
+npm run build
+npm run ragbox -- --help
+```
+
+### 真实 E2E 验证
 
 推荐用脚本运行：
 
@@ -382,18 +452,3 @@ npm run test:e2e
 这个测试默认使用 `./examples`，执行 `ragbox index ./examples --output-dir ./examples/.pageindex`，查询生成的 JSON 索引目录，然后再查询 docs 目录本身。运行时会打印实时阶段日志、逐文档索引进度、query 进度，以及长时间命令的心跳日志。`./examples` 现在包含 100 个 Markdown demo 文档；如果你想先快速验证 OAuth 文档，可以设置 `RAGBOX_E2E_DOCS_DIR=./examples/authentication/oauth2`。
 
 默认 e2e 问题是一个英文模糊问题：“What problem does PKCE solve in OAuth 2.0, and how does it reduce authorization code interception risk?”。e2e 日志会分别打印从索引目录 query 和从 docs 目录 query 得到的最终答案。
-
-Markdown 索引时，ragbox 默认会让 PageIndex 生成 `node_id` 和 `text`。query 时只会在“选节点”prompt 里临时去掉 `text`，最终回答阶段仍会使用选中节点的正文。
-
-## 常见问题
-
-- `PAGEINDEX_CLI is required to run PageIndex`：设置 `PAGEINDEX_CLI=/path/to/run_pageindex.py`
-- `OPENAI_API_KEY is required for query`：设置 `OPENAI_API_KEY` 或传 `--api-key`
-- `Expected a docs folder... or a ragbox output directory`：`query` 的第一个参数可以传带 `.pageindex/` 的 docs 目录，也可以直接传索引输出目录
-- `PageIndex completed but no generated JSON result was found`：如果你的 PageIndex CLI 不使用默认的 `--output` 参数名，把 `PAGEINDEX_OUTPUT_ARG` 设置成它支持的输出路径参数名。
-
-## 限制
-
-- 需要你本地已经安装并配置 PageIndex
-- 查询质量依赖 PageIndex JSON 结构和所使用的 LLM
-- 当前基础流程是树结构选择，不是向量检索

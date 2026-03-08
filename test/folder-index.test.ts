@@ -10,6 +10,7 @@ import { loadPageIndexConfig } from "../src/folder-index/config";
 import { hashFile } from "../src/folder-index/hash";
 import { chatCompletionsUrl } from "../src/folder-index/llm-client";
 import { diffManifest, getPageIndexPath, resolveDocumentIndexPath } from "../src/folder-index/manifest";
+import { queryMultipleIndexes } from "../src/folder-index/multi-query";
 import { normalizeRelativePath } from "../src/folder-index/path-utils";
 import { runPageIndex } from "../src/folder-index/pageindex-runner";
 import { buildNodeMap, extractNodeTextFromMarkdown, queryFolder, resolveQueryIndexLocation, stripText } from "../src/folder-index/query";
@@ -712,6 +713,129 @@ test("query CLI treats a single argument as the question when docs config provid
   assert.match(result.stderr, /Expected a docs folder/);
 });
 
+test("query CLI accepts comma-separated config sources for multi-source query", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        llm: {
+          apiKey: "test-key"
+        },
+        sources: {
+          docs: {
+            rootDir: "./docs",
+            outputDir: "./.ragbox-index/docs"
+          },
+          api: {
+            rootDir: "./api-docs",
+            outputDir: "./.ragbox-index/api"
+          }
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [cliPath, "--config", configPath, "query", "--source", "docs,api", "How do I deploy?"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 1, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /Missing question/);
+  assert.doesNotMatch(result.stderr, /Source not found/);
+  assert.match(result.stderr, /Expected a docs folder/);
+});
+
+test("query CLI --all-sources reads configured sources", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        llm: {
+          apiKey: "test-key"
+        },
+        sources: {
+          docs: {
+            rootDir: "./docs",
+            outputDir: "./.ragbox-index/docs"
+          },
+          api: {
+            rootDir: "./api-docs",
+            outputDir: "./.ragbox-index/api"
+          }
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [cliPath, "--config", configPath, "query", "--all-sources", "How do I deploy?"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 1, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /Missing question/);
+  assert.doesNotMatch(result.stderr, /No configured sources/);
+  assert.match(result.stderr, /Expected a docs folder/);
+});
+
+test("query CLI defaults to all configured sources when multiple sources are configured", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        llm: {
+          apiKey: "test-key"
+        },
+        sources: {
+          docs: {
+            rootDir: "./docs",
+            outputDir: "./.ragbox-index/docs"
+          },
+          api: {
+            rootDir: "./api-docs",
+            outputDir: "./.ragbox-index/api"
+          }
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [cliPath, "--config", configPath, "query", "How do I deploy?"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 1, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /Missing question/);
+  assert.doesNotMatch(result.stderr, /Missing query target/);
+  assert.match(result.stderr, /Expected a docs folder/);
+});
+
 test("custom output dir resolves manifest and document index paths", () => {
   const rootDir = path.join(os.tmpdir(), "ragbox-test", "docs");
   const outputDir = path.join(os.tmpdir(), "ragbox-test", ".ragbox-index");
@@ -904,6 +1028,74 @@ test("queryFolder returns answer, selections, sources, and timings", async () =>
     assert.deepEqual(result.warnings, []);
     assert.equal(calls.length, 3);
     assert.ok(result.timingsMs.total >= result.timingsMs.answer);
+  } finally {
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
+test("queryMultipleIndexes synthesizes answers and prefixes source references", async () => {
+  const docsFixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const apiFixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsFixture = await writeValidIndexFixture(docsFixtureDir);
+  const apiFixture = await writeValidIndexFixture(apiFixtureDir);
+  const responses = [
+    JSON.stringify({ documents: [docsFixture.docId] }),
+    JSON.stringify({ nodes: ["n1"] }),
+    "Docs answer",
+    JSON.stringify({ documents: [apiFixture.docId] }),
+    JSON.stringify({ nodes: ["n1"] }),
+    "API answer",
+    "Fused answer"
+  ];
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async (_input, init) => {
+    calls.push(String(init?.body ?? ""));
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: responses.shift()
+            }
+          }
+        ]
+      })
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await queryMultipleIndexes(
+      [
+        { name: "docs", target: docsFixture.outputDir },
+        { name: "api", target: apiFixture.outputDir }
+      ],
+      "How do I deploy?",
+      {
+        apiKey: "test-key",
+        baseUrl: "https://example.test/v1",
+        model: "test-model"
+      }
+    );
+
+    assert.equal(result.version, 1);
+    assert.equal(result.target, "multiple");
+    assert.equal(result.answer, "Fused answer");
+    assert.deepEqual(result.sourcesQueried, ["docs", "api"]);
+    assert.deepEqual(
+      result.sources.map((source) => source.reference),
+      ["docs:auth.md#n1", "api:auth.md#n1"]
+    );
+    assert.deepEqual(
+      result.results.map((sourceResult) => sourceResult.source),
+      ["docs", "api"]
+    );
+    assert.equal(calls.length, 7);
+    assert.match(calls[6], /Per-source draft answers/);
+    assert.match(calls[6], /docs:auth\.md#n1/);
+    assert.match(calls[6], /api:auth\.md#n1/);
   } finally {
     (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
   }
