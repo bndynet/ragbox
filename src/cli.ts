@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import path from "node:path";
 import { Command } from "commander";
 import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig, writeDefaultRagboxConfig } from "./config-file";
+import { loadPageIndexConfig } from "./folder-index/config";
 import { indexFolder } from "./folder-index/indexer";
 import { queryMultipleIndexes, MultiQueryTarget } from "./folder-index/multi-query";
 import { queryFolder } from "./folder-index/query";
 import { watchFolder } from "./folder-index/watch";
 import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions } from "./folder-index/types";
+import { inspectIndex, validateIndex, InspectIndexResult, ValidateIndexResult } from "./sdk";
 
 function parseConcurrency(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -71,6 +74,11 @@ type WatchCommandOptions = IndexCommandOptions & {
 
 type QueryCommandOptions = SharedCommandOptions & {
   allSources?: boolean;
+  trace?: boolean;
+};
+
+type DiagnosticCommandOptions = SharedCommandOptions & {
+  allSources?: boolean;
 };
 
 type InitCommandOptions = {
@@ -91,6 +99,43 @@ type IndexJsonOutput = {
   counts: IndexCounts;
 };
 
+type DiagnosticTarget = {
+  source?: string;
+  target: string;
+  options: PageIndexOptions;
+};
+
+type StatusTargetOutput = {
+  source?: string;
+  target: string;
+  ok: boolean;
+  inspect?: InspectIndexResult;
+  errors: ValidateIndexResult["errors"];
+  warnings: ValidateIndexResult["warnings"];
+};
+
+type StatusJsonOutput = {
+  version: 1;
+  command: "status";
+  ok: boolean;
+  targets: StatusTargetOutput[];
+};
+
+type DoctorCheck = {
+  name: string;
+  ok: boolean;
+  message: string;
+  path?: string;
+};
+
+type DoctorJsonOutput = {
+  version: 1;
+  command: "doctor";
+  ok: boolean;
+  checks: DoctorCheck[];
+  status: StatusJsonOutput;
+};
+
 function addLlmOptions(command: Command): Command {
   return command
     .option("--api-key <key>", "OpenAI-compatible API key")
@@ -100,6 +145,18 @@ function addLlmOptions(command: Command): Command {
 
 function addProjectOptions(command: Command): Command {
   return command.option("--source <name>", "ragbox config source; query accepts comma-separated names");
+}
+
+function getGlobalOptions(command: Command): { config?: string } {
+  let current: Command | null | undefined = command;
+  while (current) {
+    const options = current.opts<{ config?: string }>();
+    if (options.config) {
+      return { config: options.config };
+    }
+    current = current.parent;
+  }
+  return {};
 }
 
 function writeJson(value: unknown): void {
@@ -149,7 +206,7 @@ async function loadCommandConfig(command: Command, commandOptions: SharedCommand
   rootDir?: string;
   options: PageIndexOptions;
 }> {
-  const globalOptions = command.parent?.opts<{ config?: string }>() ?? {};
+  const globalOptions = getGlobalOptions(command);
   const resolved = await resolveRagboxConfig({
     configPath: globalOptions.config,
     source: commandOptions.source
@@ -192,13 +249,14 @@ function buildOptions(
   });
 }
 
-function buildQueryOptions(configOptions: PageIndexOptions, commandOptions: SharedCommandOptions): PageIndexOptions {
+function buildQueryOptions(configOptions: PageIndexOptions, commandOptions: SharedCommandOptions & { trace?: boolean }): PageIndexOptions {
   return mergeDefined<PageIndexOptions>({
     ...configOptions
   }, {
     apiKey: commandOptions.apiKey,
     baseUrl: commandOptions.baseUrl,
-    model: commandOptions.model
+    model: commandOptions.model,
+    trace: commandOptions.trace
   });
 }
 
@@ -243,7 +301,7 @@ async function loadConfiguredQueryTargets(command: Command, commandOptions: Quer
   answerOptions: PageIndexOptions;
   targets: MultiQueryTarget[];
 }> {
-  const globalOptions = command.parent?.opts<{ config?: string }>() ?? {};
+  const globalOptions = getGlobalOptions(command);
   if (commandOptions.allSources && commandOptions.source) {
     throw new Error("Use either --source or --all-sources, not both.");
   }
@@ -298,9 +356,262 @@ async function shouldQueryAllSourcesByDefault(
     return false;
   }
 
-  const globalOptions = command.parent?.opts<{ config?: string }>() ?? {};
+  const globalOptions = getGlobalOptions(command);
   const { config } = await readRagboxConfig(globalOptions.config);
   return listRagboxConfigSourceNames(config).length > 1;
+}
+
+async function loadDiagnosticTargets(
+  command: Command,
+  commandOptions: DiagnosticCommandOptions,
+  target: string | undefined,
+  allSourcesByDefault: boolean
+): Promise<DiagnosticTarget[]> {
+  if (target) {
+    return [
+      {
+        target,
+        options: buildQueryOptions({}, commandOptions)
+      }
+    ];
+  }
+
+  const globalOptions = getGlobalOptions(command);
+  if (commandOptions.allSources && commandOptions.source) {
+    throw new Error("Use either --source or --all-sources, not both.");
+  }
+
+  let sourceNames = parseSourceNames(commandOptions.source);
+  if (commandOptions.allSources || (allSourcesByDefault && sourceNames.length === 0)) {
+    const { config } = await readRagboxConfig(globalOptions.config);
+    const configuredSourceNames = listRagboxConfigSourceNames(config);
+    if (commandOptions.allSources || configuredSourceNames.length > 1) {
+      sourceNames = configuredSourceNames;
+    }
+  }
+
+  if (sourceNames.length > 0) {
+    const targets: DiagnosticTarget[] = [];
+    for (const sourceName of sourceNames) {
+      const resolved = await resolveRagboxConfig({
+        configPath: globalOptions.config,
+        source: sourceName
+      });
+      const resolvedTarget = resolved.pageIndexOptions.outputDir ?? resolved.rootDir;
+      if (!resolvedTarget) {
+        throw new Error(`Source does not define outputDir or rootDir: ${sourceName}`);
+      }
+      targets.push({
+        source: sourceName,
+        target: resolvedTarget,
+        options: buildQueryOptions(resolved.pageIndexOptions, commandOptions)
+      });
+    }
+    return targets;
+  }
+
+  const loaded = await loadCommandConfig(command, commandOptions);
+  const resolvedTarget = loaded.options.outputDir ?? loaded.rootDir;
+  return [
+    {
+      target: requireTarget(resolvedTarget),
+      options: buildQueryOptions(loaded.options, commandOptions)
+    }
+  ];
+}
+
+async function buildStatusOutput(targets: DiagnosticTarget[]): Promise<StatusJsonOutput> {
+  const statusTargets: StatusTargetOutput[] = [];
+
+  for (const target of targets) {
+    const validation = await validateIndex(target.target);
+    statusTargets.push({
+      source: target.source,
+      target: target.target,
+      ok: validation.ok,
+      inspect: validation.inspect,
+      errors: validation.errors,
+      warnings: validation.warnings
+    });
+  }
+
+  return {
+    version: 1,
+    command: "status",
+    ok: statusTargets.every((target) => target.ok),
+    targets: statusTargets
+  };
+}
+
+function printStatusOutput(status: StatusJsonOutput): void {
+  for (const target of status.targets) {
+    const label = target.source ? `${target.source} ${target.target}` : target.target;
+    console.log(`${target.ok ? "ok" : "error"} ${label}`);
+    if (target.inspect) {
+      const counts = target.inspect.counts;
+      console.log(`  documents=${counts.total} ready=${counts.ready} failed=${counts.failed}`);
+      console.log(`  output=${target.inspect.outputDir}`);
+      console.log(`  generatedAt=${target.inspect.generatedAt}`);
+    }
+    for (const error of target.errors) {
+      console.log(`  error ${error.code}: ${error.message}`);
+    }
+    for (const warning of target.warnings) {
+      console.log(`  warning ${warning.code}: ${warning.message}`);
+    }
+  }
+}
+
+function isPathLikeCommand(value: string): boolean {
+  return path.isAbsolute(value) || value.startsWith(".") || value.includes("/") || value.includes("\\");
+}
+
+async function commandPathExists(value: string | undefined): Promise<boolean | undefined> {
+  if (!value || !isPathLikeCommand(value)) {
+    return undefined;
+  }
+  return await pathExists(value);
+}
+
+async function buildDoctorOutput(
+  command: Command,
+  commandOptions: DiagnosticCommandOptions,
+  target: string | undefined
+): Promise<DoctorJsonOutput> {
+  const globalOptions = getGlobalOptions(command);
+  const checks: DoctorCheck[] = [];
+  const { configPath } = await readRagboxConfig(globalOptions.config);
+
+  checks.push({
+    name: "config",
+    ok: true,
+    message: configPath ? `Loaded config: ${configPath}` : "No ragbox config found; using CLI flags, environment, and defaults.",
+    path: configPath
+  });
+
+  let targets: DiagnosticTarget[] = [];
+  try {
+    targets = await loadDiagnosticTargets(command, commandOptions, target, true);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    checks.push({
+      name: "target",
+      ok: false,
+      message
+    });
+  }
+
+  const options = targets[0]?.options ?? buildQueryOptions({}, commandOptions);
+  const runtime = loadPageIndexConfig(options);
+  const cliExists = await commandPathExists(runtime.cliPath);
+  checks.push({
+    name: "pageindex-cli",
+    ok: Boolean(runtime.cliPath) && cliExists !== false,
+    message: !runtime.cliPath
+      ? "PAGEINDEX_CLI or pageIndex.cli is not configured."
+      : cliExists === false
+        ? `PageIndex CLI does not exist: ${runtime.cliPath}`
+        : `PageIndex CLI configured: ${runtime.cliPath}`,
+    path: runtime.cliPath
+  });
+  checks.push({
+    name: "llm-model",
+    ok: Boolean(runtime.model),
+    message: `LLM model: ${runtime.model}`
+  });
+  checks.push({
+    name: "llm-base-url",
+    ok: Boolean(runtime.baseUrl),
+    message: `LLM base URL: ${runtime.baseUrl}`
+  });
+  checks.push({
+    name: "llm-api-key",
+    ok: Boolean(runtime.apiKey),
+    message: runtime.apiKey ? "LLM API key is configured." : "OPENAI_API_KEY or llm.apiKey is not configured."
+  });
+
+  const status = await buildStatusOutput(targets);
+  checks.push({
+    name: "index-status",
+    ok: status.ok,
+    message: status.targets.length > 0 ? `Checked ${status.targets.length} index target(s).` : "No index target was checked."
+  });
+
+  return {
+    version: 1,
+    command: "doctor",
+    ok: checks.every((check) => check.ok),
+    checks,
+    status
+  };
+}
+
+function printDoctorOutput(doctor: DoctorJsonOutput): void {
+  for (const check of doctor.checks) {
+    console.log(`${check.ok ? "ok" : "error"} ${check.name}: ${check.message}`);
+  }
+  printStatusOutput(doctor.status);
+}
+
+function printInspectResult(result: InspectIndexResult, source?: string): void {
+  const label = source ? `${source} ${result.target}` : result.target;
+  console.log(`Index ${label}`);
+  console.log(`rootDir=${result.rootDir}`);
+  console.log(`outputDir=${result.outputDir}`);
+  console.log(`generatedAt=${result.generatedAt}`);
+  console.log(`documents=${result.counts.total}`);
+  console.log(`ready=${result.counts.ready}`);
+  console.log(`failed=${result.counts.failed}`);
+  for (const document of result.documents) {
+    console.log(`- ${document.status} ${document.path}`);
+  }
+}
+
+async function runQueryAction(
+  target: string | undefined,
+  question: string | undefined,
+  commandOptions: QueryCommandOptions,
+  command: Command
+): Promise<void> {
+  const sourceNames = parseSourceNames(commandOptions.source);
+  const implicitAllSources = await shouldQueryAllSourcesByDefault(command, target, question, sourceNames);
+  if (commandOptions.allSources || sourceNames.length > 1 || implicitAllSources) {
+    if (question) {
+      throw new Error("Multi-source query uses configured sources; pass only the question argument.");
+    }
+
+    const multiSourceOptions = implicitAllSources ? { ...commandOptions, allSources: true } : commandOptions;
+    const loadedSources = await loadConfiguredQueryTargets(command, multiSourceOptions);
+    const result = await queryMultipleIndexes(loadedSources.targets, requireQuestion(target), loadedSources.answerOptions);
+    if (commandOptions.json || commandOptions.trace) {
+      writeJson(result);
+      return;
+    }
+    console.log(result.answer);
+    return;
+  }
+
+  const singleSourceOptions = sourceNames.length === 1 ? { ...commandOptions, source: sourceNames[0] } : commandOptions;
+  const loaded = await loadCommandConfig(command, singleSourceOptions);
+  let queryTarget = target;
+  let queryQuestion = question;
+  const configuredTarget = loaded.options.outputDir ?? loaded.rootDir;
+
+  if (!queryQuestion && queryTarget && configuredTarget) {
+    const singleArgIsQuestion = singleSourceOptions.source || !(await pathExists(queryTarget));
+    if (singleArgIsQuestion) {
+      queryQuestion = queryTarget;
+      queryTarget = undefined;
+    }
+  }
+
+  queryTarget ??= configuredTarget;
+  const result = await queryFolder(requireTarget(queryTarget), requireQuestion(queryQuestion), buildQueryOptions(loaded.options, singleSourceOptions));
+  if (commandOptions.json || commandOptions.trace) {
+    writeJson(result);
+    return;
+  }
+  console.log(result.answer);
 }
 
 async function main(): Promise<void> {
@@ -360,6 +671,76 @@ async function main(): Promise<void> {
     });
 
   addProjectOptions(
+    program
+      .command("inspect")
+      .argument("[target]", "docs folder or ragbox output directory")
+      .option("--all-sources", "inspect every configured source")
+      .option("--json", "print a stable JSON result")
+  )
+    .action(async (target: string | undefined, commandOptions: DiagnosticCommandOptions, command: Command) => {
+      const targets = await loadDiagnosticTargets(command, commandOptions, target, false);
+      const results = [];
+      for (const diagnosticTarget of targets) {
+        results.push({
+          source: diagnosticTarget.source,
+          ...(await inspectIndex(diagnosticTarget.target))
+        });
+      }
+
+      if (commandOptions.json) {
+        writeJson(
+          results.length === 1
+            ? results[0]
+            : {
+                version: 1,
+                command: "inspect",
+                indexes: results
+              }
+        );
+        return;
+      }
+
+      for (const result of results) {
+        printInspectResult(result, result.source);
+      }
+    });
+
+  addProjectOptions(
+    program
+      .command("status")
+      .argument("[target]", "docs folder or ragbox output directory")
+      .option("--all-sources", "check every configured source")
+      .option("--json", "print a stable JSON result")
+  )
+    .action(async (target: string | undefined, commandOptions: DiagnosticCommandOptions, command: Command) => {
+      const targets = await loadDiagnosticTargets(command, commandOptions, target, true);
+      const status = await buildStatusOutput(targets);
+      if (commandOptions.json) {
+        writeJson(status);
+        return;
+      }
+      printStatusOutput(status);
+    });
+
+  addProjectOptions(
+    addLlmOptions(
+      program
+        .command("doctor")
+        .argument("[target]", "docs folder or ragbox output directory")
+        .option("--all-sources", "check every configured source")
+        .option("--json", "print a stable JSON result")
+    )
+  )
+    .action(async (target: string | undefined, commandOptions: DiagnosticCommandOptions, command: Command) => {
+      const doctor = await buildDoctorOutput(command, commandOptions, target);
+      if (commandOptions.json) {
+        writeJson(doctor);
+        return;
+      }
+      printDoctorOutput(doctor);
+    });
+
+  addProjectOptions(
     addLlmOptions(
       program
       .command("query")
@@ -367,48 +748,29 @@ async function main(): Promise<void> {
       .argument("[question]", "question to answer")
       .option("--all-sources", "query every configured source and synthesize one answer")
       .option("--json", "print a stable JSON result with selections and sources")
+      .option("--trace", "include query trace diagnostics; implies JSON output")
     )
   )
     .action(async (target: string | undefined, question: string | undefined, commandOptions: QueryCommandOptions, command: Command) => {
-      const sourceNames = parseSourceNames(commandOptions.source);
-      const implicitAllSources = await shouldQueryAllSourcesByDefault(command, target, question, sourceNames);
-      if (commandOptions.allSources || sourceNames.length > 1 || implicitAllSources) {
-        if (question) {
-          throw new Error("Multi-source query uses configured sources; pass only the question argument.");
-        }
+      await runQueryAction(target, question, commandOptions, command);
+    });
 
-        const multiSourceOptions = implicitAllSources ? { ...commandOptions, allSources: true } : commandOptions;
-        const loadedSources = await loadConfiguredQueryTargets(command, multiSourceOptions);
-        const result = await queryMultipleIndexes(loadedSources.targets, requireQuestion(target), loadedSources.answerOptions);
-        if (commandOptions.json) {
-          writeJson(result);
-          return;
-        }
-        console.log(result.answer);
-        return;
-      }
+  const traceCommand = program
+    .command("trace")
+    .description("run diagnostic tracing commands");
 
-      const singleSourceOptions = sourceNames.length === 1 ? { ...commandOptions, source: sourceNames[0] } : commandOptions;
-      const loaded = await loadCommandConfig(command, singleSourceOptions);
-      let queryTarget = target;
-      let queryQuestion = question;
-      const configuredTarget = loaded.options.outputDir ?? loaded.rootDir;
-
-      if (!queryQuestion && queryTarget && configuredTarget) {
-        const singleArgIsQuestion = singleSourceOptions.source || !(await pathExists(queryTarget));
-        if (singleArgIsQuestion) {
-          queryQuestion = queryTarget;
-          queryTarget = undefined;
-        }
-      }
-
-      queryTarget ??= configuredTarget;
-      const result = await queryFolder(requireTarget(queryTarget), requireQuestion(queryQuestion), buildQueryOptions(loaded.options, singleSourceOptions));
-      if (commandOptions.json) {
-        writeJson(result);
-        return;
-      }
-      console.log(result.answer);
+  addProjectOptions(
+    addLlmOptions(
+      traceCommand
+        .command("query")
+        .argument("[target]", "docs folder or ragbox output directory")
+        .argument("[question]", "question to answer")
+        .option("--all-sources", "query every configured source and synthesize one answer")
+        .option("--json", "print a stable JSON result with selections and sources")
+    )
+  )
+    .action(async (target: string | undefined, question: string | undefined, commandOptions: QueryCommandOptions, command: Command) => {
+      await runQueryAction(target, question, { ...commandOptions, trace: true, json: true }, command);
     });
 
   addProjectOptions(

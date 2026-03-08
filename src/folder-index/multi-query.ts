@@ -3,6 +3,15 @@ import { chatCompletion } from "./llm-client";
 import { queryFolder } from "./query";
 import { PageIndexOptions, QueryResult, QuerySource } from "./types";
 
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+function estimateTokenCount(value: string): number {
+  const trimmed = value.trim();
+  return trimmed ? Math.ceil(trimmed.length / 4) : 0;
+}
+
 export type MultiQueryTarget = {
   name: string;
   target: string;
@@ -25,6 +34,8 @@ export type MultiQueryResult = {
   question: string;
   model: string;
   answer: string;
+  contextBytes: number;
+  contextTokens: number;
   results: MultiQuerySourceResult[];
   sources: MultiQuerySource[];
   warnings: string[];
@@ -32,6 +43,19 @@ export type MultiQueryResult = {
     query: number;
     answer: number;
     total: number;
+  };
+  trace?: {
+    version: 1;
+    context: {
+      sourceCount: number;
+      bytes: number;
+      tokens: number;
+    };
+    answer: {
+      promptBytes: number;
+      responseBytes: number;
+    };
+    failures: [];
   };
 };
 
@@ -104,6 +128,9 @@ ${sourceAnswerSummary(results)}
 
 Multi-source context:
 ${answerContext(results)}`;
+  const context = answerContext(results);
+  const contextBytes = byteLength(context);
+  const contextTokens = estimateTokenCount(context);
 
   const answerStartedAt = Date.now();
   const answer = await chatCompletion([{ role: "user", content: prompt }], answerOptions);
@@ -116,6 +143,8 @@ ${answerContext(results)}`;
     question,
     model: loadPageIndexConfig(answerOptions).model,
     answer,
+    contextBytes,
+    contextTokens,
     results,
     sources,
     warnings,
@@ -123,6 +152,23 @@ ${answerContext(results)}`;
       query: queryMs,
       answer: answerMs,
       total: elapsedSince(totalStartedAt)
-    }
+    },
+    ...(answerOptions.trace
+      ? {
+          trace: {
+            version: 1 as const,
+            context: {
+              sourceCount: sources.length,
+              bytes: contextBytes,
+              tokens: contextTokens
+            },
+            answer: {
+              promptBytes: byteLength(prompt),
+              responseBytes: byteLength(answer)
+            },
+            failures: []
+          }
+        }
+      : {})
   };
 }

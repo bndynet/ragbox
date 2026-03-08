@@ -31,6 +31,7 @@ export function loadPageIndexConfig(overrides: PageIndexOptions = {}): Required<
     outputArg: overrides.outputArg ?? env.PAGEINDEX_OUTPUT_ARG ?? "--output",
     extraArgs: overrides.extraArgs ?? parseExtraArgs(env.PAGEINDEX_EXTRA_ARGS),
     progress: overrides.progress,
+    trace: overrides.trace,
     watchProgress: overrides.watchProgress,
     env
   };

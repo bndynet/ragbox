@@ -50,7 +50,9 @@ export type CreateIndexOptions = SdkOptions & {
   onProgress?: (event: IndexProgressEvent) => void;
 };
 
-export type QueryIndexOptions = SdkOptions;
+export type QueryIndexOptions = SdkOptions & {
+  trace?: boolean;
+};
 
 export type WatchIndexOptions = CreateIndexOptions & {
   onEvent?: (event: WatchProgressEvent) => void;
@@ -149,6 +151,7 @@ function mergeDefined<T extends object>(...values: T[]): T {
 
 async function toPageIndexOptions(options: CreateIndexOptions | QueryIndexOptions | WatchIndexOptions = {}): Promise<PageIndexOptions> {
   const createOptions = options as CreateIndexOptions;
+  const queryOptions = options as QueryIndexOptions;
   const watchOptions = options as WatchIndexOptions;
   const resolved = await resolveRagboxConfig({
     configPath: options.configPath,
@@ -169,6 +172,7 @@ async function toPageIndexOptions(options: CreateIndexOptions | QueryIndexOption
     outputDir: options.outputDir,
     progress: createOptions.onProgress,
     pythonPath: createOptions.pageIndexPython,
+    trace: queryOptions.trace,
     watchProgress: watchOptions.onEvent
   });
 }

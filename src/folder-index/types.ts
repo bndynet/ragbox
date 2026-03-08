@@ -45,6 +45,7 @@ export type PageIndexOptions = {
   extraArgs?: string[];
   env?: NodeJS.ProcessEnv;
   progress?: (event: IndexProgressEvent) => void;
+  trace?: boolean;
   watchProgress?: (event: WatchProgressEvent) => void;
 };
 
@@ -190,6 +191,8 @@ export type QuerySelectedDocument = {
   title?: string;
   status?: DocumentStatus;
   indexPath?: string;
+  selectionReason: "selected_by_document_planner";
+  skipReason?: "missing_root_tree_document" | "missing_manifest_record" | "missing_index_path" | "document_not_ready";
 };
 
 export type QuerySelectedNode = {
@@ -199,6 +202,9 @@ export type QuerySelectedNode = {
   found: boolean;
   hasText: boolean;
   reference?: string;
+  selectionReason: "selected_by_node_planner";
+  skipReason?: "node_not_found" | "missing_text";
+  textBytes?: number;
 };
 
 export type QuerySource = {
@@ -216,6 +222,61 @@ export type QueryTimings = {
   total: number;
 };
 
+export type QueryFailureStage =
+  | "resolve"
+  | "read-index"
+  | "select-documents"
+  | "read-document-index"
+  | "select-nodes"
+  | "extract-context"
+  | "answer";
+
+export type QueryTraceFailure = {
+  stage: QueryFailureStage;
+  code: string;
+  message: string;
+  docId?: string;
+  nodeId?: string;
+  path?: string;
+  reference?: string;
+};
+
+export type QueryDocumentSelectionTrace = {
+  promptBytes: number;
+  responseBytes: number;
+  rawResponse: string;
+  selectedDocumentIds: string[];
+};
+
+export type QueryNodeSelectionTrace = {
+  docId: string;
+  path: string;
+  promptBytes: number;
+  responseBytes: number;
+  rawResponse: string;
+  selectedNodeIds: string[];
+};
+
+export type QueryContextTrace = {
+  sourceCount: number;
+  bytes: number;
+  tokens: number;
+};
+
+export type QueryAnswerTrace = {
+  promptBytes: number;
+  responseBytes: number;
+};
+
+export type QueryTrace = {
+  version: 1;
+  documentSelection?: QueryDocumentSelectionTrace;
+  nodeSelections: QueryNodeSelectionTrace[];
+  context: QueryContextTrace;
+  answer?: QueryAnswerTrace;
+  failures: QueryTraceFailure[];
+};
+
 export type QueryResult = {
   version: 1;
   target: string;
@@ -224,11 +285,14 @@ export type QueryResult = {
   question: string;
   model: string;
   answer: string;
+  contextBytes: number;
+  contextTokens: number;
   selectedDocuments: QuerySelectedDocument[];
   selectedNodes: QuerySelectedNode[];
   sources: QuerySource[];
   warnings: string[];
   timingsMs: QueryTimings;
+  trace?: QueryTrace;
 };
 
 export type ChatMessage = {

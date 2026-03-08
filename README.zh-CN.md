@@ -209,6 +209,36 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 }
 ```
 
+### `ragbox inspect [target]`
+
+查看索引的 manifest 和文档级明细。
+
+```bash
+ragbox inspect ./.ragbox-index
+ragbox inspect --source api
+ragbox inspect --all-sources --json
+```
+
+### `ragbox status [target]`
+
+校验本地索引文件，并报告每个 target 是否处于可 query 状态。
+
+```bash
+ragbox status ./.ragbox-index
+ragbox status --all-sources
+ragbox status --json
+```
+
+### `ragbox doctor [target]`
+
+执行本地诊断，检查配置、PageIndex CLI 配置、LLM 设置、API key 是否存在，以及索引是否有效。这个命令不会发起网络请求。
+
+```bash
+ragbox doctor
+ragbox doctor --source docs --json
+ragbox doctor --all-sources
+```
+
 ### `ragbox query [target] <question>`
 
 基于 docs 目录或已有索引目录回答问题。如果传 docs 目录，目录下需要有默认的 `.pageindex` 索引。
@@ -219,6 +249,8 @@ ragbox query ./.ragbox-index "部署步骤是什么？"
 ragbox query ./docs/.pageindex "怎么配置认证？"
 ragbox query ./.ragbox-index "怎么配置认证？" --model gpt-4o-mini --api-key sk-...
 ragbox query ./.ragbox-index "怎么配置认证？" --json
+ragbox query ./.ragbox-index "怎么配置认证？" --trace
+ragbox trace query ./.ragbox-index "怎么配置认证？"
 ragbox query "部署步骤是什么？"
 ragbox query --source docs,api "认证链路整体是怎样的？"
 ragbox query --all-sources "部署步骤是什么？"
@@ -253,11 +285,15 @@ indexes/
 单 source `QueryResult` 字段：
 
 - `answer`：最终回答文本
-- `selectedDocuments`：从 `root-tree.json` 中选中的文档
-- `selectedNodes`：每篇文档中选中的 PageIndex 节点
+- `contextBytes` 和 `contextTokens`：最终 answer context 的大小；tokens 为估算值
+- `selectedDocuments`：从 `root-tree.json` 中选中的文档，包含 `selectionReason`，必要时包含 `skipReason`
+- `selectedNodes`：每篇文档中选中的 PageIndex 节点，包含 `selectionReason`、可选 `skipReason` 和 `textBytes`
 - `sources`：最终回答使用的来源引用和节点文本
 - `warnings`：不可用文档、缺失节点或空上下文等提醒
 - `timingsMs`：解析、选择和生成回答的耗时
+- `trace`：只有使用 `--trace` 或 `ragbox trace query` 时才会出现，包含文档/节点选择阶段的 LLM 原始响应、prompt/response 字节数、context 大小和非致命失败记录
+
+致命 query 错误会带上失败阶段，例如 `Query failed during select-documents: ...`。
 
 ### `ragbox watch <folder>`
 

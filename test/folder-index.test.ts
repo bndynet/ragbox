@@ -836,6 +836,41 @@ test("query CLI defaults to all configured sources when multiple sources are con
   assert.match(result.stderr, /Expected a docs folder/);
 });
 
+test("status CLI prints index validation JSON", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  const result = spawnSync(process.execPath, [cliPath, "status", fixture.outputDir, "--json"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  const output = JSON.parse(result.stdout) as {
+    command: string;
+    ok: boolean;
+    targets: Array<{ ok: boolean; inspect?: { counts: { ready: number } } }>;
+  };
+  assert.equal(output.command, "status");
+  assert.equal(output.ok, true);
+  assert.equal(output.targets[0]?.ok, true);
+  assert.equal(output.targets[0]?.inspect?.counts.ready, 1);
+});
+
+test("trace query CLI reports the query failure stage", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  const result = spawnSync(process.execPath, [cliPath, "trace", "query", path.join(tempDir, "missing-index"), "What is indexed?"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 1, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stderr, /Query failed during resolve/);
+});
+
 test("custom output dir resolves manifest and document index paths", () => {
   const rootDir = path.join(os.tmpdir(), "ragbox-test", "docs");
   const outputDir = path.join(os.tmpdir(), "ragbox-test", ".ragbox-index");
@@ -1004,7 +1039,8 @@ test("queryFolder returns answer, selections, sources, and timings", async () =>
         path: "auth.md",
         title: "Auth",
         status: "ready",
-        indexPath
+        indexPath,
+        selectionReason: "selected_by_document_planner"
       }
     ]);
     assert.deepEqual(result.selectedNodes, [
@@ -1014,7 +1050,9 @@ test("queryFolder returns answer, selections, sources, and timings", async () =>
         nodeId: "n1",
         found: true,
         hasText: true,
-        reference: "auth.md#n1"
+        reference: "auth.md#n1",
+        selectionReason: "selected_by_node_planner",
+        textBytes: Buffer.byteLength("PKCE reduces authorization code interception risk.", "utf8")
       }
     ]);
     assert.deepEqual(result.sources, [
@@ -1026,8 +1064,62 @@ test("queryFolder returns answer, selections, sources, and timings", async () =>
       }
     ]);
     assert.deepEqual(result.warnings, []);
+    assert.ok(result.contextBytes > 0);
+    assert.ok(result.contextTokens > 0);
+    assert.equal(result.trace, undefined);
     assert.equal(calls.length, 3);
     assert.ok(result.timingsMs.total >= result.timingsMs.answer);
+  } finally {
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
+test("queryFolder trace exposes raw selections, context size, and answer diagnostics", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const documentSelectionResponse = JSON.stringify({ documents: [fixture.docId] });
+  const nodeSelectionResponse = JSON.stringify({ nodes: ["n1"] });
+  const responses = [
+    documentSelectionResponse,
+    nodeSelectionResponse,
+    "Auth answer. Source: auth.md#n1"
+  ];
+  const originalFetch = globalThis.fetch;
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: responses.shift()
+            }
+          }
+        ]
+      })
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await queryFolder(fixture.outputDir, "How does auth work?", {
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+      model: "test-model",
+      trace: true
+    });
+
+    assert.equal(result.trace?.version, 1);
+    assert.equal(result.trace.documentSelection?.rawResponse, documentSelectionResponse);
+    assert.deepEqual(result.trace.documentSelection?.selectedDocumentIds, [fixture.docId]);
+    assert.equal(result.trace.nodeSelections[0]?.rawResponse, nodeSelectionResponse);
+    assert.deepEqual(result.trace.nodeSelections[0]?.selectedNodeIds, ["n1"]);
+    assert.equal(result.trace.context.bytes, result.contextBytes);
+    assert.equal(result.trace.context.tokens, result.contextTokens);
+    assert.equal(result.trace.context.sourceCount, 1);
+    assert.ok(result.trace.answer?.promptBytes);
+    assert.ok(result.trace.answer?.responseBytes);
+    assert.deepEqual(result.trace.failures, []);
   } finally {
     (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
   }

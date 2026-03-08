@@ -7,11 +7,14 @@ import {
   DocumentRecord,
   Manifest,
   PageIndexOptions,
+  QueryFailureStage,
   QueryResult,
   QuerySelectedDocument,
   QuerySelectedNode,
   QuerySource,
   QueryTimings,
+  QueryTrace,
+  QueryTraceFailure,
   RootTreeNode
 } from "./types";
 
@@ -25,12 +28,32 @@ type NodeSelection = {
   nodes: string[];
 };
 
+type SelectionResult = {
+  ids: string[];
+  promptBytes: number;
+  rawResponse: string;
+  responseBytes: number;
+};
+
 export type QueryIndexLocation = {
   rootDir: string;
   outputDir?: string;
   manifestPath: string;
   rootTreePath: string;
 };
+
+export class QueryStageError extends Error {
+  readonly stage: QueryFailureStage;
+  readonly cause: unknown;
+
+  constructor(stage: QueryFailureStage, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    super(`Query failed during ${stage}: ${message}`);
+    this.name = "QueryStageError";
+    this.stage = stage;
+    this.cause = error;
+  }
+}
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -44,6 +67,30 @@ function logVerbose(message: string): void {
   if (isVerbose()) {
     console.error(`[ragbox] ${message}`);
   }
+}
+
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+function estimateTokenCount(value: string): number {
+  const trimmed = value.trim();
+  return trimmed ? Math.ceil(trimmed.length / 4) : 0;
+}
+
+async function runQueryStage<T>(stage: QueryFailureStage, task: () => Promise<T>): Promise<T> {
+  try {
+    return await task();
+  } catch (error) {
+    if (error instanceof QueryStageError) {
+      throw error;
+    }
+    throw new QueryStageError(stage, error);
+  }
+}
+
+function addTraceFailure(trace: QueryTrace | undefined, failure: QueryTraceFailure): void {
+  trace?.failures.push(failure);
 }
 
 export function stripText<T>(value: T): T {
@@ -292,7 +339,7 @@ export async function resolveQueryIndexLocation(target: string): Promise<QueryIn
   );
 }
 
-async function selectDocuments(question: string, rootTree: RootTreeNode, options: PageIndexOptions): Promise<string[]> {
+async function selectDocuments(question: string, rootTree: RootTreeNode, options: PageIndexOptions): Promise<SelectionResult> {
   const prompt = `You are given a user question and a root documentation tree.
 Each document node has:
 - node_id
@@ -311,10 +358,15 @@ ${JSON.stringify(lightweightRootTree(rootTree), null, 2)}`;
 
   const response = await chatCompletion([{ role: "user", content: prompt }], options);
   const parsed = parseJsonObject<DocumentSelection>(response);
-  return Array.isArray(parsed.documents) ? parsed.documents.filter((id) => typeof id === "string") : [];
+  return {
+    ids: Array.isArray(parsed.documents) ? parsed.documents.filter((id) => typeof id === "string") : [],
+    promptBytes: byteLength(prompt),
+    rawResponse: response,
+    responseBytes: byteLength(response)
+  };
 }
 
-async function selectPageIndexNodes(question: string, treeWithoutText: unknown, options: PageIndexOptions): Promise<string[]> {
+async function selectPageIndexNodes(question: string, treeWithoutText: unknown, options: PageIndexOptions): Promise<SelectionResult> {
   const prompt = `You are given a user question and a document tree.
 Each node has:
 - node_id
@@ -333,11 +385,36 @@ ${JSON.stringify(treeWithoutText, null, 2)}`;
 
   const response = await chatCompletion([{ role: "user", content: prompt }], options);
   const parsed = parseJsonObject<NodeSelection>(response);
-  return Array.isArray(parsed.nodes) ? parsed.nodes.filter((id) => typeof id === "string") : [];
+  return {
+    ids: Array.isArray(parsed.nodes) ? parsed.nodes.filter((id) => typeof id === "string") : [],
+    promptBytes: byteLength(prompt),
+    rawResponse: response,
+    responseBytes: byteLength(response)
+  };
 }
 
 function elapsedSince(startedAt: number): number {
   return Date.now() - startedAt;
+}
+
+function documentSkipReason(
+  documentNode: RootTreeNode | undefined,
+  manifestRecord: DocumentRecord | undefined,
+  indexPath: string | undefined
+): QuerySelectedDocument["skipReason"] | undefined {
+  if (!documentNode) {
+    return "missing_root_tree_document";
+  }
+  if (!manifestRecord) {
+    return "missing_manifest_record";
+  }
+  if (!indexPath) {
+    return "missing_index_path";
+  }
+  if (manifestRecord.status !== "ready") {
+    return "document_not_ready";
+  }
+  return undefined;
 }
 
 export async function queryFolder(target: string, question: string, options: PageIndexOptions = {}): Promise<QueryResult> {
@@ -355,20 +432,43 @@ export async function queryFolder(target: string, question: string, options: Pag
   const sources: QuerySource[] = [];
   const config = loadPageIndexConfig(options);
   const resolvedTarget = path.resolve(target);
+  const trace: QueryTrace | undefined = options.trace
+    ? {
+        version: 1,
+        nodeSelections: [],
+        context: {
+          sourceCount: 0,
+          bytes: 0,
+          tokens: 0
+        },
+        failures: []
+      }
+    : undefined;
 
   logVerbose(`query resolve target=${path.resolve(target)}`);
   const resolveStartedAt = Date.now();
-  const location = await resolveQueryIndexLocation(target);
+  const location = await runQueryStage("resolve", async () => await resolveQueryIndexLocation(target));
   logVerbose(`query index root=${location.rootDir} output=${location.outputDir ?? "(default)"}`);
-  const manifest = await readJson<Manifest>(location.manifestPath);
-  const rootTree = await readJson<RootTreeNode>(location.rootTreePath);
+  const { manifest, rootTree } = await runQueryStage("read-index", async () => ({
+    manifest: await readJson<Manifest>(location.manifestPath),
+    rootTree: await readJson<RootTreeNode>(location.rootTreePath)
+  }));
   timings.resolve = elapsedSince(resolveStartedAt);
 
   const documentNodes = findDocumentNodes(rootTree);
   const manifestByDocId = new Map<string, DocumentRecord>(manifest.documents.map((record) => [record.docId, record]));
   logVerbose(`query select documents total=${manifest.documents.length}`);
   const selectDocumentsStartedAt = Date.now();
-  const selectedDocumentIds = await selectDocuments(question, rootTree, options);
+  const documentSelection = await runQueryStage("select-documents", async () => await selectDocuments(question, rootTree, options));
+  const selectedDocumentIds = documentSelection.ids;
+  if (trace) {
+    trace.documentSelection = {
+      promptBytes: documentSelection.promptBytes,
+      responseBytes: documentSelection.responseBytes,
+      rawResponse: documentSelection.rawResponse,
+      selectedDocumentIds
+    };
+  }
   timings.selectDocuments = elapsedSince(selectDocumentsStartedAt);
   logVerbose(`query selected documents count=${selectedDocumentIds.length} ids=${selectedDocumentIds.join(",")}`);
 
@@ -377,27 +477,53 @@ export async function queryFolder(target: string, question: string, options: Pag
     const manifestRecord = manifestByDocId.get(docId);
     const indexPath = documentNode?.index_path ?? manifestRecord?.indexPath;
     const available = Boolean(documentNode && manifestRecord && indexPath && manifestRecord.status === "ready");
+    const skipReason = documentSkipReason(documentNode, manifestRecord, indexPath);
 
-    selectedDocuments.push({
+    const selectedDocument: QuerySelectedDocument = {
       docId,
       available,
       path: manifestRecord?.path ?? documentNode?.path,
       title: manifestRecord?.title ?? documentNode?.title,
       status: manifestRecord?.status,
-      indexPath
-    });
+      indexPath,
+      selectionReason: "selected_by_document_planner"
+    };
+    if (skipReason) {
+      selectedDocument.skipReason = skipReason;
+    }
+    selectedDocuments.push(selectedDocument);
 
     if (!available || !documentNode || !manifestRecord || !indexPath) {
       logVerbose(`query skip unavailable document id=${docId}`);
       warnings.push(`Selected document is unavailable: ${docId}`);
+      addTraceFailure(trace, {
+        stage: "read-document-index",
+        code: skipReason ?? "document_unavailable",
+        message: `Selected document is unavailable: ${docId}`,
+        docId,
+        path: manifestRecord?.path ?? documentNode?.path
+      });
       continue;
     }
 
     logVerbose(`query read pageindex path=${manifestRecord.path}`);
-    const pageIndexJson = await readJson<unknown>(resolveDocumentIndexPath(location.rootDir, indexPath, location.outputDir));
+    const pageIndexJson = await runQueryStage(
+      "read-document-index",
+      async () => await readJson<unknown>(resolveDocumentIndexPath(location.rootDir, indexPath, location.outputDir))
+    );
     logVerbose(`query select nodes path=${manifestRecord.path}`);
     const selectNodesStartedAt = Date.now();
-    const selectedNodeIds = await selectPageIndexNodes(question, stripText(pageIndexJson), options);
+    const treeWithoutText = stripText(pageIndexJson);
+    const nodeSelection = await runQueryStage("select-nodes", async () => await selectPageIndexNodes(question, treeWithoutText, options));
+    const selectedNodeIds = nodeSelection.ids;
+    trace?.nodeSelections.push({
+      docId,
+      path: manifestRecord.path,
+      promptBytes: nodeSelection.promptBytes,
+      responseBytes: nodeSelection.responseBytes,
+      rawResponse: nodeSelection.rawResponse,
+      selectedNodeIds
+    });
     timings.selectNodes += elapsedSince(selectNodesStartedAt);
     logVerbose(`query selected nodes path=${manifestRecord.path} count=${selectedNodeIds.length} ids=${selectedNodeIds.join(",")}`);
     const nodeMap = buildNodeMap(pageIndexJson);
@@ -412,12 +538,23 @@ export async function queryFolder(target: string, question: string, options: Pag
         nodeId,
         found: Boolean(node),
         hasText: false,
-        reference
+        reference,
+        selectionReason: "selected_by_node_planner"
       };
 
       if (!node) {
+        selectedNode.skipReason = "node_not_found";
         selectedNodes.push(selectedNode);
         warnings.push(`Selected node was not found: ${reference}`);
+        addTraceFailure(trace, {
+          stage: "extract-context",
+          code: "node_not_found",
+          message: `Selected node was not found: ${reference}`,
+          docId,
+          nodeId,
+          path: manifestRecord.path,
+          reference
+        });
         continue;
       }
 
@@ -430,12 +567,23 @@ export async function queryFolder(target: string, question: string, options: Pag
         }
       }
       if (!text) {
+        selectedNode.skipReason = "missing_text";
         selectedNodes.push(selectedNode);
         warnings.push(`Selected node has no extractable text: ${reference}`);
+        addTraceFailure(trace, {
+          stage: "extract-context",
+          code: "missing_text",
+          message: `Selected node has no extractable text: ${reference}`,
+          docId,
+          nodeId,
+          path: manifestRecord.path,
+          reference
+        });
         continue;
       }
 
       selectedNode.hasText = true;
+      selectedNode.textBytes = byteLength(text);
       selectedNodes.push(selectedNode);
       sources.push({
         path: manifestRecord.path,
@@ -448,9 +596,23 @@ export async function queryFolder(target: string, question: string, options: Pag
 
   if (sources.length === 0) {
     warnings.push("No relevant context was extracted from the selected index nodes.");
+    addTraceFailure(trace, {
+      stage: "extract-context",
+      code: "empty_context",
+      message: "No relevant context was extracted from the selected index nodes."
+    });
   }
 
   const context = sources.length > 0 ? sources.map((source) => `Source: ${source.reference}\n${source.text}`).join("\n\n---\n\n") : "(no relevant context found)";
+  const contextBytes = byteLength(context);
+  const contextTokens = estimateTokenCount(context);
+  if (trace) {
+    trace.context = {
+      sourceCount: sources.length,
+      bytes: contextBytes,
+      tokens: contextTokens
+    };
+  }
   logVerbose(`query final answer contextParts=${sources.length}`);
   const finalPrompt = `Answer the user question using only the provided context.
 If the context is insufficient, say that the indexed documents do not contain enough information.
@@ -461,7 +623,13 @@ Context:
 ${context}`;
 
   const answerStartedAt = Date.now();
-  const answer = await chatCompletion([{ role: "user", content: finalPrompt }], options);
+  const answer = await runQueryStage("answer", async () => await chatCompletion([{ role: "user", content: finalPrompt }], options));
+  if (trace) {
+    trace.answer = {
+      promptBytes: byteLength(finalPrompt),
+      responseBytes: byteLength(answer)
+    };
+  }
   timings.answer = elapsedSince(answerStartedAt);
   timings.total = elapsedSince(totalStartedAt);
 
@@ -473,10 +641,13 @@ ${context}`;
     question,
     model: config.model,
     answer,
+    contextBytes,
+    contextTokens,
     selectedDocuments,
     selectedNodes,
     sources,
     warnings,
-    timingsMs: timings
+    timingsMs: timings,
+    ...(trace ? { trace } : {})
   };
 }

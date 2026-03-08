@@ -211,6 +211,36 @@ Use `--json` to print a versioned machine-readable result with output paths and 
 }
 ```
 
+### `ragbox inspect [target]`
+
+Prints manifest and document-level details for an index.
+
+```bash
+ragbox inspect ./.ragbox-index
+ragbox inspect --source api
+ragbox inspect --all-sources --json
+```
+
+### `ragbox status [target]`
+
+Validates local index files and reports whether each target is query-ready.
+
+```bash
+ragbox status ./.ragbox-index
+ragbox status --all-sources
+ragbox status --json
+```
+
+### `ragbox doctor [target]`
+
+Runs local diagnostics for config, PageIndex CLI configuration, LLM settings, API key presence, and index validity. It does not call the network.
+
+```bash
+ragbox doctor
+ragbox doctor --source docs --json
+ragbox doctor --all-sources
+```
+
 ### `ragbox query [target] <question>`
 
 Answers from either a docs folder with a default `.pageindex` index, or an existing ragbox output directory.
@@ -221,6 +251,8 @@ ragbox query ./.ragbox-index "What are the deployment steps?"
 ragbox query ./docs/.pageindex "How do I configure authentication?"
 ragbox query ./.ragbox-index "How do I configure authentication?" --model gpt-4o-mini --api-key sk-...
 ragbox query ./.ragbox-index "How do I configure authentication?" --json
+ragbox query ./.ragbox-index "How do I configure authentication?" --trace
+ragbox trace query ./.ragbox-index "How do I configure authentication?"
 ragbox query "What are the deployment steps?"
 ragbox query --source docs,api "How does authentication work end to end?"
 ragbox query --all-sources "What are the deployment steps?"
@@ -248,11 +280,15 @@ Use `--json` to print a versioned result contract. Single-source queries return 
 Single-source `QueryResult` fields:
 
 - `answer`: final answer text
-- `selectedDocuments`: document ids selected from `root-tree.json`
-- `selectedNodes`: PageIndex nodes selected per document
+- `contextBytes` and `contextTokens`: size of the final answer context; tokens are estimated
+- `selectedDocuments`: document ids selected from `root-tree.json`, including `selectionReason` and optional `skipReason`
+- `selectedNodes`: PageIndex nodes selected per document, including `selectionReason`, optional `skipReason`, and `textBytes`
 - `sources`: source references and extracted node text used as answer context
 - `warnings`: unavailable documents, missing nodes, or empty context
 - `timingsMs`: resolve, selection, and answer timings
+- `trace`: only present with `--trace` or `ragbox trace query`; includes raw document/node selection LLM responses, prompt/response byte counts, context size, and non-fatal failure records
+
+Fatal query errors include the stage that failed, for example `Query failed during select-documents: ...`.
 
 ### `ragbox watch <folder>`
 
