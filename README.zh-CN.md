@@ -242,18 +242,53 @@ ragbox index /srv/app/docs --output-dir /var/lib/ragbox/docs-index --concurrency
 ragbox query /var/lib/ragbox/docs-index "怎么配置认证？"
 ```
 
-代码中调用：
+SDK 调用：
 
 ```js
-const { queryFolder } = require("@bndynet/ragbox");
+const {
+  createIndex,
+  inspectIndex,
+  queryIndex,
+  validateIndex,
+  watchIndex
+} = require("@bndynet/ragbox");
 
-const result = await queryFolder(
+await createIndex("/srv/app/docs", {
+  outputDir: "/var/lib/ragbox/docs-index",
+  pageIndexCli: "/opt/PageIndex/run_pageindex.py",
+  pageIndexOutputArg: "--output"
+});
+
+const result = await queryIndex(
   "/var/lib/ragbox/docs-index",
   "怎么配置认证？"
 );
 
 console.log(result.answer);
 console.log(result.sources);
+
+const validation = await validateIndex("/var/lib/ragbox/docs-index");
+console.log(validation.ok);
+
+const inspect = await inspectIndex("/var/lib/ragbox/docs-index");
+console.log(inspect.counts);
+
+const watcher = await watchIndex("/srv/app/docs", {
+  outputDir: "/var/lib/ragbox/docs-index",
+  pageIndexCli: "/opt/PageIndex/run_pageindex.py",
+  pageIndexOutputArg: "--output",
+  onEvent: (event) => console.log(event)
+});
+await watcher.ready;
+await watcher.close();
+```
+
+包根入口只导出产品化 SDK API。底层工具仍保留在 `advanced` namespace，适合更定制的集成：
+
+```js
+const { advanced } = require("@bndynet/ragbox");
+
+const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-index");
 ```
 
 ## 真实 E2E 验证

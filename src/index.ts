@@ -1,10 +1,25 @@
-export * from "./folder-index/config";
-export * from "./folder-index/hash";
-export * from "./folder-index/indexer";
-export * from "./folder-index/manifest";
-export * from "./folder-index/pageindex-runner";
-export * from "./folder-index/path-utils";
-export * from "./folder-index/query";
-export * from "./folder-index/root-tree";
-export * from "./folder-index/scan";
-export * from "./folder-index/types";
+export {
+  createIndex,
+  inspectIndex,
+  queryIndex,
+  validateIndex,
+  watchIndex
+} from "./sdk";
+
+export type {
+  CreateIndexOptions,
+  CreateIndexResult,
+  IndexCounts,
+  InspectIndexDocument,
+  InspectIndexResult,
+  QueryIndexOptions,
+  QueryResult,
+  SdkOptions,
+  ValidateIndexResult,
+  ValidationIssue,
+  WatchIndexHandle,
+  WatchIndexOptions,
+  WatchIndexReadyResult
+} from "./sdk";
+
+export * as advanced from "./advanced";

@@ -14,6 +14,24 @@ type WatchProgressEventInput = WatchProgressEvent extends infer Event
     : never
   : never;
 
+export type WatchFolderReadyResult =
+  | {
+      ok: true;
+      result: IndexFolderResult;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+export type WatchFolderHandle = {
+  rootDir: string;
+  outputDir: string;
+  ready: Promise<WatchFolderReadyResult>;
+  closed: Promise<void>;
+  close: () => Promise<void>;
+};
+
 function toIndexCounts(result: IndexFolderResult): IndexCounts {
   return {
     total: result.manifest.documents.length,
@@ -43,15 +61,75 @@ function reportWatchProgress(options: PageIndexOptions, event: WatchProgressEven
   }
 }
 
-export async function watchFolder(folder: string, options: PageIndexOptions = {}): Promise<void> {
+export async function startWatchFolder(folder: string, options: PageIndexOptions = {}): Promise<WatchFolderHandle> {
   const rootDir = path.resolve(folder);
   const config = loadPageIndexConfig(options);
   const outputDir = resolvePageIndexDir(rootDir, config.outputDir);
   const shouldIgnoreOutputDir = isStrictSubPath(rootDir, outputDir);
   const hasStructuredProgress = Boolean(config.watchProgress);
+  let watcher: chokidar.FSWatcher | undefined;
   let timer: NodeJS.Timeout | undefined;
   let running = false;
   let pending = false;
+  let stopped = false;
+  let stopReported = false;
+  let readySettled = false;
+  let closeStarted: Promise<void> | undefined;
+  let resolveReady!: (value: WatchFolderReadyResult) => void;
+  let resolveClosed!: () => void;
+  const ready = new Promise<WatchFolderReadyResult>((resolve) => {
+    resolveReady = resolve;
+  });
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+
+  async function finishClose(): Promise<void> {
+    if (closeStarted) {
+      return await closeStarted;
+    }
+
+    closeStarted = (async () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      if (watcher) {
+        await watcher.close();
+        watcher = undefined;
+      }
+      if (!stopReported) {
+        stopReported = true;
+        reportWatchProgress(
+          config,
+          createWatchEvent({
+            type: "watch-stop",
+            rootDir,
+            outputDir
+          })
+        );
+      }
+      resolveClosed();
+    })();
+
+    return await closeStarted;
+  }
+
+  async function close(): Promise<void> {
+    stopped = true;
+    finishReady({ ok: false, error: "Watch closed before initial index completed" });
+    if (!running) {
+      await finishClose();
+    }
+    return await closed;
+  }
+
+  function finishReady(value: WatchFolderReadyResult): void {
+    if (!readySettled) {
+      readySettled = true;
+      resolveReady(value);
+    }
+  }
 
   function isIgnored(candidatePath: string): boolean {
     if (WATCH_IGNORED.test(candidatePath)) {
@@ -71,6 +149,9 @@ export async function watchFolder(folder: string, options: PageIndexOptions = {}
       pending = true;
       return;
     }
+    if (stopped) {
+      return;
+    }
 
     running = true;
     pending = false;
@@ -86,6 +167,9 @@ export async function watchFolder(folder: string, options: PageIndexOptions = {}
 
     try {
       const result = await indexFolder(rootDir, options);
+      if (reason === "initial") {
+        finishReady({ ok: true, result });
+      }
       reportWatchProgress(
         config,
         createWatchEvent({
@@ -105,6 +189,9 @@ export async function watchFolder(folder: string, options: PageIndexOptions = {}
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (reason === "initial") {
+        finishReady({ ok: false, error: message });
+      }
       reportWatchProgress(
         config,
         createWatchEvent({
@@ -120,13 +207,19 @@ export async function watchFolder(folder: string, options: PageIndexOptions = {}
       }
     } finally {
       running = false;
-      if (pending) {
+      if (pending && !stopped) {
         await runIndex("change");
+      } else if (stopped) {
+        await finishClose();
       }
     }
   }
 
   function scheduleIndex(eventName: "add" | "change" | "unlink", changedPath: string): void {
+    if (stopped) {
+      return;
+    }
+
     reportWatchProgress(
       config,
       createWatchEvent({
@@ -158,42 +251,54 @@ export async function watchFolder(folder: string, options: PageIndexOptions = {}
       outputDir
     })
   );
-  await runIndex("initial");
 
-  const watcher = chokidar.watch(["**/*.md", "**/*.mdx"], {
-    cwd: rootDir,
-    ignored: isIgnored,
-    ignoreInitial: true,
-    persistent: true
-  });
+  void (async () => {
+    await runIndex("initial");
+    if (stopped) {
+      await finishClose();
+      return;
+    }
 
-  watcher
-    .on("add", (changedPath) => scheduleIndex("add", changedPath))
-    .on("change", (changedPath) => scheduleIndex("change", changedPath))
-    .on("unlink", (changedPath) => scheduleIndex("unlink", changedPath));
-
-  await new Promise<void>((resolve) => {
-    const stop = async (): Promise<void> => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-      await watcher.close();
-      reportWatchProgress(
-        config,
-        createWatchEvent({
-          type: "watch-stop",
-          rootDir,
-          outputDir
-        })
-      );
-      resolve();
-    };
-
-    process.once("SIGINT", () => {
-      void stop();
+    watcher = chokidar.watch(["**/*.md", "**/*.mdx"], {
+      cwd: rootDir,
+      ignored: isIgnored,
+      ignoreInitial: true,
+      persistent: true
     });
-    process.once("SIGTERM", () => {
-      void stop();
-    });
-  });
+
+    watcher
+      .on("add", (changedPath) => scheduleIndex("add", changedPath))
+      .on("change", (changedPath) => scheduleIndex("change", changedPath))
+      .on("unlink", (changedPath) => scheduleIndex("unlink", changedPath));
+
+    if (stopped) {
+      await finishClose();
+    }
+  })();
+
+  return {
+    rootDir,
+    outputDir,
+    ready,
+    closed,
+    close
+  };
+}
+
+export async function watchFolder(folder: string, options: PageIndexOptions = {}): Promise<void> {
+  const handle = await startWatchFolder(folder, options);
+
+  const stop = (): void => {
+    void handle.close();
+  };
+
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+
+  try {
+    await handle.closed;
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+  }
 }

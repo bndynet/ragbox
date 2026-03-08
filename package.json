@@ -7,6 +7,7 @@
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
+      "require": "./dist/src/index.js",
       "default": "./dist/src/index.js"
     }
   },
@@ -14,10 +15,7 @@
     "ragbox": "./dist/src/cli.js"
   },
   "files": [
-    "dist/src/cli.js",
-    "dist/src/index.js",
-    "dist/src/index.d.ts",
-    "dist/src/folder-index",
+    "dist/src",
     "README.md",
     "README.zh-CN.md"
   ],

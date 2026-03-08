@@ -235,18 +235,53 @@ ragbox index /srv/app/docs --output-dir /var/lib/ragbox/docs-index --concurrency
 ragbox query /var/lib/ragbox/docs-index "How do I configure authentication?"
 ```
 
-Library use:
+SDK use:
 
 ```js
-const { queryFolder } = require("@bndynet/ragbox");
+const {
+  createIndex,
+  inspectIndex,
+  queryIndex,
+  validateIndex,
+  watchIndex
+} = require("@bndynet/ragbox");
 
-const result = await queryFolder(
+await createIndex("/srv/app/docs", {
+  outputDir: "/var/lib/ragbox/docs-index",
+  pageIndexCli: "/opt/PageIndex/run_pageindex.py",
+  pageIndexOutputArg: "--output"
+});
+
+const result = await queryIndex(
   "/var/lib/ragbox/docs-index",
   "How do I configure authentication?"
 );
 
 console.log(result.answer);
 console.log(result.sources);
+
+const validation = await validateIndex("/var/lib/ragbox/docs-index");
+console.log(validation.ok);
+
+const inspect = await inspectIndex("/var/lib/ragbox/docs-index");
+console.log(inspect.counts);
+
+const watcher = await watchIndex("/srv/app/docs", {
+  outputDir: "/var/lib/ragbox/docs-index",
+  pageIndexCli: "/opt/PageIndex/run_pageindex.py",
+  pageIndexOutputArg: "--output",
+  onEvent: (event) => console.log(event)
+});
+await watcher.ready;
+await watcher.close();
+```
+
+The package root exports the product SDK API. Lower-level helpers are still available under `advanced` for custom integrations:
+
+```js
+const { advanced } = require("@bndynet/ragbox");
+
+const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-index");
 ```
 
 ## Real E2E Validation

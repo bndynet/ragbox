@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import * as ragbox from "../src/index";
 import { loadPageIndexConfig } from "../src/folder-index/config";
 import { hashFile } from "../src/folder-index/hash";
 import { chatCompletionsUrl } from "../src/folder-index/llm-client";
@@ -28,6 +29,83 @@ function scanned(pathName: string, hash = "sha256:hash"): ScannedFile {
     title: path.basename(pathName, path.extname(pathName)),
     indexPath: createIndexPath(docId)
   };
+}
+
+async function writeFakePageIndexScript(scriptPath: string, summary = "sdk ok"): Promise<void> {
+  await fs.writeFile(
+    scriptPath,
+    `const fs = require("node:fs");
+const args = process.argv.slice(2);
+const outputPath = args[args.indexOf("--output") + 1];
+if (!outputPath) {
+  throw new Error("missing --output");
+}
+fs.writeFileSync(outputPath, JSON.stringify({
+  node_id: "root",
+  summary: ${JSON.stringify(summary)},
+  nodes: [{ node_id: "n1", title: "Body", text: "Body text" }]
+}));
+`,
+    "utf8"
+  );
+}
+
+async function writeValidIndexFixture(baseDir: string, outputInsideDocs = false): Promise<{
+  rootDir: string;
+  outputDir: string;
+  docId: string;
+  indexPath: string;
+  manifest: Manifest;
+}> {
+  const rootDir = path.join(baseDir, "docs");
+  const outputDir = outputInsideDocs ? path.join(rootDir, ".pageindex") : path.join(baseDir, ".ragbox-index");
+  const indexPath = "indexes/auth.pageindex.json";
+  const docId = "doc:auth";
+  const manifest: Manifest = {
+    version: 1,
+    rootDir,
+    generatedAt: "2026-01-01T00:00:00.000Z",
+    documents: [
+      {
+        docId,
+        path: "auth.md",
+        absolutePath: path.join(rootDir, "auth.md"),
+        contentHash: "sha256:auth",
+        size: 10,
+        mtimeMs: 1,
+        title: "Auth",
+        summary: "Authentication guide",
+        indexPath,
+        status: "ready"
+      }
+    ]
+  };
+  const rootTree = {
+    node_id: "root",
+    type: "root",
+    title: "docs",
+    children: [
+      {
+        node_id: docId,
+        type: "document",
+        title: "Auth",
+        summary: "Authentication guide",
+        path: "auth.md",
+        index_path: indexPath
+      }
+    ]
+  };
+
+  await fs.mkdir(path.join(outputDir, "indexes"), { recursive: true });
+  await fs.writeFile(path.join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`, "utf8");
+  await fs.writeFile(path.join(outputDir, "root-tree.json"), `${JSON.stringify(rootTree)}\n`, "utf8");
+  await fs.writeFile(
+    path.join(outputDir, indexPath),
+    `${JSON.stringify({ node_id: "root", nodes: [{ node_id: "n1", text: "Auth body" }] })}\n`,
+    "utf8"
+  );
+
+  return { rootDir, outputDir, docId, indexPath, manifest };
 }
 
 test("hashFile returns a streaming sha256 hash with prefix", async () => {
@@ -83,6 +161,188 @@ test("chatCompletionsUrl accepts either a base URL or a full chat completions en
     chatCompletionsUrl("https://api.example.com/v1/chat/completions/"),
     "https://api.example.com/v1/chat/completions"
   );
+});
+
+test("SDK root exports only product API plus advanced namespace", () => {
+  const runtimeExports = Object.keys(ragbox).filter((key) => key !== "__esModule").sort();
+
+  assert.deepEqual(runtimeExports, ["advanced", "createIndex", "inspectIndex", "queryIndex", "validateIndex", "watchIndex"]);
+  assert.equal(typeof ragbox.createIndex, "function");
+  assert.equal(typeof ragbox.advanced.indexFolder, "function");
+  assert.equal(typeof ragbox.advanced.queryFolder, "function");
+});
+
+test("createIndex indexes docs through product SDK options", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "fake-pageindex.cjs");
+  const progress: string[] = [];
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await writeFakePageIndexScript(scriptPath);
+
+  const result = await ragbox.createIndex(docsDir, {
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexOutputArg: "--output",
+    pageIndexPython: process.execPath,
+    model: "sdk-model",
+    onProgress: (event) => progress.push(event.type)
+  });
+
+  assert.equal(result.version, 1);
+  assert.equal(result.rootDir, docsDir);
+  assert.equal(result.outputDir, outputDir);
+  assert.equal(result.manifestPath, path.join(outputDir, "manifest.json"));
+  assert.equal(result.rootTreePath, path.join(outputDir, "root-tree.json"));
+  assert.deepEqual(result.counts, {
+    total: 1,
+    ready: 1,
+    failed: 0,
+    added: 1,
+    modified: 0,
+    retryFailed: 0,
+    unchanged: 0,
+    deleted: 0
+  });
+  assert.ok(progress.includes("scan"));
+  assert.ok(progress.includes("write"));
+});
+
+test("queryIndex returns the structured QueryResult contract", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const { outputDir, docId } = await writeValidIndexFixture(tempDir);
+  const responses = [
+    JSON.stringify({ documents: [docId] }),
+    JSON.stringify({ nodes: ["n1"] }),
+    "Auth body. Source: auth.md#n1"
+  ];
+  const originalFetch = globalThis.fetch;
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: responses.shift()
+            }
+          }
+        ]
+      })
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await ragbox.queryIndex(outputDir, "What is in auth?", {
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+      model: "sdk-query-model"
+    });
+
+    assert.equal(result.version, 1);
+    assert.equal(result.model, "sdk-query-model");
+    assert.match(result.answer, /Auth body/);
+    assert.deepEqual(result.sources.map((source) => source.reference), ["auth.md#n1"]);
+    assert.equal(result.selectedDocuments[0]?.docId, docId);
+    assert.equal(result.selectedNodes[0]?.nodeId, "n1");
+  } finally {
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
+test("inspectIndex supports output dirs and docs dirs", async () => {
+  const outputFixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsFixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const outputFixture = await writeValidIndexFixture(outputFixtureDir);
+  const docsFixture = await writeValidIndexFixture(docsFixtureDir, true);
+
+  const outputInspect = await ragbox.inspectIndex(outputFixture.outputDir);
+  const docsInspect = await ragbox.inspectIndex(docsFixture.rootDir);
+
+  assert.equal(outputInspect.outputDir, outputFixture.outputDir);
+  assert.equal(outputInspect.counts.ready, 1);
+  assert.deepEqual(outputInspect.documents.map((document) => document.path), ["auth.md"]);
+  assert.equal(docsInspect.outputDir, docsFixture.outputDir);
+  assert.equal(docsInspect.rootDir, docsFixture.rootDir);
+});
+
+test("validateIndex reports valid and invalid index states", async () => {
+  const validDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const missingDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const missingIndexDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const unknownDocDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const valid = await writeValidIndexFixture(validDir);
+  const missingIndex = await writeValidIndexFixture(missingIndexDir);
+  const unknown = await writeValidIndexFixture(unknownDocDir);
+
+  await fs.unlink(path.join(missingIndex.outputDir, missingIndex.indexPath));
+  await fs.writeFile(
+    path.join(unknown.outputDir, "root-tree.json"),
+    `${JSON.stringify({
+      node_id: "root",
+      type: "root",
+      title: "docs",
+      children: [{ node_id: "doc:missing", type: "document", title: "Missing", path: "missing.md" }]
+    })}\n`,
+    "utf8"
+  );
+
+  const validResult = await ragbox.validateIndex(valid.outputDir);
+  const missingResult = await ragbox.validateIndex(missingDir);
+  const missingIndexResult = await ragbox.validateIndex(missingIndex.outputDir);
+  const unknownDocResult = await ragbox.validateIndex(unknown.outputDir);
+
+  assert.equal(validResult.ok, true);
+  assert.equal(validResult.inspect?.counts.ready, 1);
+  assert.equal(missingResult.ok, false);
+  assert.deepEqual(
+    missingResult.errors.map((issue) => issue.code).sort(),
+    ["missing_manifest", "missing_root_tree"]
+  );
+  assert.equal(missingIndexResult.ok, false);
+  assert.ok(missingIndexResult.errors.some((issue) => issue.code === "missing_document_index"));
+  assert.equal(unknownDocResult.ok, false);
+  assert.ok(unknownDocResult.errors.some((issue) => issue.code === "root_tree_unknown_document"));
+});
+
+test("watchIndex returns a closeable handle and reports initial readiness", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "fake-pageindex.cjs");
+  const events: string[] = [];
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await writeFakePageIndexScript(scriptPath, "watch ok");
+
+  const handle = await ragbox.watchIndex(docsDir, {
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexOutputArg: "--output",
+    pageIndexPython: process.execPath,
+    onEvent: (event) => events.push(event.type),
+    onProgress: (event) => events.push(`progress:${event.type}`)
+  });
+  const ready = await handle.ready;
+
+  assert.equal(handle.rootDir, docsDir);
+  assert.equal(handle.outputDir, outputDir);
+  assert.equal(ready.ok, true);
+  if (ready.ok) {
+    assert.equal(ready.result.counts.ready, 1);
+  }
+  assert.ok(events.includes("watch-start"));
+  assert.ok(events.includes("watch-index-done"));
+  assert.ok(events.includes("progress:scan"));
+
+  await handle.close();
+  await handle.closed;
+  assert.ok(events.includes("watch-stop"));
 });
 
 test("index CLI forwards shared LLM flags to PageIndex", async () => {
