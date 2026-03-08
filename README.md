@@ -24,7 +24,7 @@ No vector database is required for the basic flow.
 | Retrieval signal | Embedding similarity | LLM selection over document and node trees |
 | Storage | Vector database plus document store | Local JSON files under the output directory |
 | Context shape | Flat retrieved chunks | Structured nodes with file paths and node ids |
-| Strength | Fast fuzzy recall across large corpora | Preserves document hierarchy and source references |
+| Strength | Fast fuzzy recall across large collections | Preserves document hierarchy and source references |
 | Tradeoff | Requires embedding/index infrastructure | Depends on PageIndex quality and LLM selection |
 
 The two approaches can also be combined: use vector search for broad candidate recall, then use PageIndex trees for structured filtering, context packing, and citations.
@@ -80,9 +80,56 @@ ragbox query ./.ragbox-index "How do I configure authentication?" \
   --model gpt-4o-mini
 ```
 
+## Project Config
+
+Create a project config:
+
+```bash
+ragbox init
+```
+
+This writes `ragbox.config.json`:
+
+```json
+{
+  "version": 1,
+  "pageIndex": {
+    "cli": "/path/to/PageIndex/run_pageindex.py"
+  },
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini"
+  },
+  "docs": {
+    "rootDir": "./docs",
+    "outputDir": "./.ragbox-index"
+  }
+}
+```
+
+Relative paths in the config are resolved from the config file directory. CLI flags override config values. API keys should usually stay in environment variables instead of `ragbox.config.json`.
+
+For one documentation source, use the top-level `docs` object. No `--source` flag is needed. If a project needs multiple named sources, use the optional `sources` map.
+
+Use the configured docs:
+
+```bash
+ragbox index
+ragbox query "How do I configure authentication?"
+ragbox watch --jsonl
+ragbox --config ./ragbox.config.json index
+```
+
+You can keep environment-specific files too:
+
+```bash
+ragbox --config prod index
+ragbox --config ./ragbox.config.prod.json query "How do I deploy?"
+```
+
 ## Configuration
 
-Command-line flags override environment variables.
+Resolution order is command-line flags, then `ragbox.config.json`, then environment variables, then defaults.
 
 | Setting | Env | CLI flag | Used by | Default |
 | --- | --- | --- | --- | --- |
@@ -90,7 +137,6 @@ Command-line flags override environment variables.
 | Python executable | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch` | `python3` |
 | Output directory | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch` | `<folder>/.pageindex` |
 | Concurrency | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch` | `1` |
-| PageIndex output flag | `PAGEINDEX_OUTPUT_ARG` | none | `index`, `watch` | none |
 | API base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | required for query and usually PageIndex |
 | Model | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
@@ -98,6 +144,16 @@ Command-line flags override environment variables.
 For production, prefer environment variables or a secret manager for API keys. Passing `--api-key` is useful for local testing, but command-line secrets can appear in shell history and process listings.
 
 ## Commands
+
+### `ragbox init`
+
+Creates a `ragbox.config.json` file.
+
+```bash
+ragbox init
+ragbox init --docs-dir ./content --output-dir ./.idx
+ragbox init --output ./configs/ragbox.config.json --force
+```
 
 ### `ragbox index <folder>`
 
@@ -247,9 +303,9 @@ const {
 } = require("@bndynet/ragbox");
 
 await createIndex("/srv/app/docs", {
+  configPath: "./ragbox.config.json",
   outputDir: "/var/lib/ragbox/docs-index",
-  pageIndexCli: "/opt/PageIndex/run_pageindex.py",
-  pageIndexOutputArg: "--output"
+  pageIndexCli: "/opt/PageIndex/run_pageindex.py"
 });
 
 const result = await queryIndex(
@@ -269,7 +325,6 @@ console.log(inspect.counts);
 const watcher = await watchIndex("/srv/app/docs", {
   outputDir: "/var/lib/ragbox/docs-index",
   pageIndexCli: "/opt/PageIndex/run_pageindex.py",
-  pageIndexOutputArg: "--output",
   onEvent: (event) => console.log(event)
 });
 await watcher.ready;
@@ -308,7 +363,6 @@ export RAGBOX_E2E_EXPECTED_TEXT=PKCE
 export RAGBOX_VERBOSE=1
 
 # Optional:
-export PAGEINDEX_OUTPUT_ARG=--output
 export RAGBOX_E2E_PAGEINDEX_PYTHON=/path/to/python
 export RAGBOX_E2E_HEARTBEAT_MS=10000
 export RAGBOX_E2E_COMMAND_TIMEOUT_MS=300000
@@ -329,7 +383,7 @@ For Markdown indexing, ragbox asks PageIndex to include `node_id` and `text` by 
 - `PAGEINDEX_CLI is required to run PageIndex`: set `PAGEINDEX_CLI=/path/to/run_pageindex.py`.
 - `OPENAI_API_KEY is required for query`: set `OPENAI_API_KEY` or pass `--api-key`.
 - `Expected a docs folder... or a ragbox output directory`: pass either the docs folder with `.pageindex/`, or the output directory itself.
-- `PageIndex completed but no generated JSON result was found`: set `PAGEINDEX_OUTPUT_ARG` if your PageIndex CLI supports an explicit output path flag.
+- `PageIndex completed but no generated JSON result was found`: if your PageIndex CLI does not use the default `--output` flag, set `PAGEINDEX_OUTPUT_ARG` to the supported output-path flag.
 
 ## Limitations
 

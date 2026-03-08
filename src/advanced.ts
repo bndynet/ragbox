@@ -1,3 +1,4 @@
+export * from "./config-file";
 export * from "./folder-index/config";
 export * from "./folder-index/hash";
 export * from "./folder-index/indexer";

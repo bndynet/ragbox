@@ -186,7 +186,6 @@ test("createIndex indexes docs through product SDK options", async () => {
   const result = await ragbox.createIndex(docsDir, {
     outputDir,
     pageIndexCli: scriptPath,
-    pageIndexOutputArg: "--output",
     pageIndexPython: process.execPath,
     model: "sdk-model",
     onProgress: (event) => progress.push(event.type)
@@ -209,6 +208,43 @@ test("createIndex indexes docs through product SDK options", async () => {
   });
   assert.ok(progress.includes("scan"));
   assert.ok(progress.includes("write"));
+});
+
+test("createIndex reads ragbox config file options", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".sdk-config-index");
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const scriptPath = path.join(tempDir, "fake-pageindex.cjs");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "keep.md"), "# Keep\n\nBody\n", "utf8");
+  await writeFakePageIndexScript(scriptPath, "sdk config ok");
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        pageIndex: {
+          cli: "./fake-pageindex.cjs",
+          python: process.execPath
+        },
+        index: {
+          outputDir: "./.sdk-config-index",
+          include: ["**/*.md"],
+          exclude: []
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = await ragbox.createIndex(docsDir, { configPath });
+
+  assert.equal(result.outputDir, outputDir);
+  assert.equal(result.counts.ready, 1);
 });
 
 test("queryIndex returns the structured QueryResult contract", async () => {
@@ -323,7 +359,6 @@ test("watchIndex returns a closeable handle and reports initial readiness", asyn
   const handle = await ragbox.watchIndex(docsDir, {
     outputDir,
     pageIndexCli: scriptPath,
-    pageIndexOutputArg: "--output",
     pageIndexPython: process.execPath,
     onEvent: (event) => events.push(event.type),
     onProgress: (event) => events.push(`progress:${event.type}`)
@@ -402,7 +437,6 @@ fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "cli ok"
       env: {
         ...process.env,
         PAGEINDEX_CLI: scriptPath,
-        PAGEINDEX_OUTPUT_ARG: "--output",
         OPENAI_API_KEY: "env-key",
         OPENAI_BASE_URL: "https://env.example/v1",
         PAGEINDEX_MODEL: "env-model"
@@ -452,8 +486,7 @@ fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "contrac
       encoding: "utf8",
       env: {
         ...process.env,
-        PAGEINDEX_CLI: scriptPath,
-        PAGEINDEX_OUTPUT_ARG: "--output"
+        PAGEINDEX_CLI: scriptPath
       }
     }
   );
@@ -471,8 +504,8 @@ fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "contrac
 
   assert.equal(output.version, 1);
   assert.equal(output.command, "index");
-  assert.equal(output.rootDir, docsDir);
-  assert.equal(output.outputDir, outputDir);
+  assert.equal(await fs.realpath(output.rootDir), await fs.realpath(docsDir));
+  assert.equal(await fs.realpath(output.outputDir), await fs.realpath(outputDir));
   assert.equal(output.manifestPath, path.join(outputDir, "manifest.json"));
   assert.equal(output.rootTreePath, path.join(outputDir, "root-tree.json"));
   assert.deepEqual(output.counts, {
@@ -485,6 +518,198 @@ fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "contrac
     unchanged: 0,
     deleted: 0
   });
+});
+
+test("init CLI writes a ragbox config file", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  const result = spawnSync(
+    process.execPath,
+    [cliPath, "init", "--output", configPath, "--docs-dir", "./content", "--output-dir", "./.idx"],
+    {
+      encoding: "utf8"
+    }
+  );
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stdout, /Created /);
+
+  const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+    version: number;
+    docs: { rootDir: string; outputDir: string };
+    llm: { baseUrl: string; model: string };
+  };
+
+  assert.equal(config.version, 1);
+  assert.equal(config.llm.baseUrl, "https://api.openai.com/v1");
+  assert.equal(config.llm.model, "gpt-4o-mini");
+  assert.equal(config.docs.rootDir, "./content");
+  assert.equal(config.docs.outputDir, "./.idx");
+});
+
+test("index CLI reads ragbox docs config and include/exclude patterns", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".configured-index");
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const scriptPath = path.join(tempDir, "fake-pageindex.cjs");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.mkdir(path.join(docsDir, "guides"), { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guides", "keep.md"), "# Keep\n\nBody\n", "utf8");
+  await fs.writeFile(path.join(docsDir, "guides", "skip.md"), "# Skip\n\nBody\n", "utf8");
+  await fs.writeFile(path.join(docsDir, "outside.md"), "# Outside\n\nBody\n", "utf8");
+  await fs.writeFile(
+    scriptPath,
+    `const fs = require("node:fs");
+const args = process.argv.slice(2);
+function value(flag) {
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
+}
+if (value("--model") !== "configured-model") {
+  throw new Error("model was " + value("--model"));
+}
+const outputPath = value("--output");
+if (!outputPath) {
+  throw new Error("missing --output");
+}
+fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "configured ok", text: "Body" }));
+`,
+    "utf8"
+  );
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        pageIndex: {
+          cli: "./fake-pageindex.cjs",
+          python: process.execPath
+        },
+        llm: {
+          model: "configured-model"
+        },
+        docs: {
+          rootDir: "./docs",
+          outputDir: "./.configured-index",
+          include: ["guides/**/*.md"],
+          exclude: ["**/skip.md"]
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [cliPath, "--config", configPath, "index", "--json"], {
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  const output = JSON.parse(result.stdout) as {
+    rootDir: string;
+    outputDir: string;
+    counts: { total: number; ready: number };
+  };
+
+  assert.equal(await fs.realpath(output.rootDir), await fs.realpath(docsDir));
+  assert.equal(await fs.realpath(output.outputDir), await fs.realpath(outputDir));
+  assert.deepEqual(output.counts, {
+    total: 1,
+    ready: 1,
+    failed: 0,
+    added: 1,
+    modified: 0,
+    retryFailed: 0,
+    unchanged: 0,
+    deleted: 0
+  });
+});
+
+test("CLI --config accepts a named config like prod for ragbox.config.prod.json", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".prod-index");
+  const configPath = path.join(tempDir, "ragbox.config.prod.json");
+  const scriptPath = path.join(tempDir, "fake-pageindex.cjs");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await writeFakePageIndexScript(scriptPath, "prod config ok");
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        pageIndex: {
+          cli: "./fake-pageindex.cjs",
+          python: process.execPath
+        },
+        docs: {
+          rootDir: "./docs",
+          outputDir: "./.prod-index"
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [cliPath, "--config", "prod", "index", "--json"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  const output = JSON.parse(result.stdout) as {
+    rootDir: string;
+    outputDir: string;
+    counts: { ready: number };
+  };
+
+  assert.equal(await fs.realpath(output.rootDir), await fs.realpath(docsDir));
+  assert.equal(await fs.realpath(output.outputDir), await fs.realpath(outputDir));
+  assert.equal(output.counts.ready, 1);
+});
+
+test("query CLI treats a single argument as the question when docs config provides the target", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        llm: {
+          apiKey: "test-key"
+        },
+        docs: {
+          rootDir: "./docs",
+          outputDir: "./.ragbox-index"
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [cliPath, "--config", configPath, "query", "How do I deploy?"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 1, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /Missing question/);
+  assert.match(result.stderr, /Expected a docs folder/);
 });
 
 test("custom output dir resolves manifest and document index paths", () => {

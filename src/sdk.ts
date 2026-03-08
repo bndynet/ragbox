@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveRagboxConfig } from "./config-file";
 import { indexFolder } from "./folder-index/indexer";
 import {
   MANIFEST_FILE,
@@ -31,12 +32,16 @@ export type {
 export type SdkOptions = {
   apiKey?: string;
   baseUrl?: string;
+  configPath?: string;
   model?: string;
   outputDir?: string;
+  source?: string;
   env?: NodeJS.ProcessEnv;
 };
 
 export type CreateIndexOptions = SdkOptions & {
+  exclude?: string[];
+  include?: string[];
   pageIndexCli?: string;
   pageIndexPython?: string;
   pageIndexOutputArg?: string;
@@ -130,24 +135,42 @@ type ReadJsonResult<T> =
       issue: ValidationIssue;
     };
 
-function toPageIndexOptions(options: CreateIndexOptions | QueryIndexOptions | WatchIndexOptions = {}): PageIndexOptions {
+function mergeDefined<T extends object>(...values: T[]): T {
+  const merged: Record<string, unknown> = {};
+  for (const value of values) {
+    for (const [key, nestedValue] of Object.entries(value)) {
+      if (nestedValue !== undefined) {
+        merged[key] = nestedValue;
+      }
+    }
+  }
+  return merged as T;
+}
+
+async function toPageIndexOptions(options: CreateIndexOptions | QueryIndexOptions | WatchIndexOptions = {}): Promise<PageIndexOptions> {
   const createOptions = options as CreateIndexOptions;
   const watchOptions = options as WatchIndexOptions;
+  const resolved = await resolveRagboxConfig({
+    configPath: options.configPath,
+    source: options.source
+  });
 
-  return {
+  return mergeDefined<PageIndexOptions>(resolved.pageIndexOptions, {
     apiKey: options.apiKey,
     baseUrl: options.baseUrl,
     cliPath: createOptions.pageIndexCli,
     concurrency: createOptions.concurrency,
     env: options.env,
+    exclude: createOptions.exclude,
     extraArgs: createOptions.pageIndexExtraArgs,
+    include: createOptions.include,
     model: options.model,
     outputArg: createOptions.pageIndexOutputArg,
     outputDir: options.outputDir,
     progress: createOptions.onProgress,
     pythonPath: createOptions.pageIndexPython,
     watchProgress: watchOptions.onEvent
-  };
+  });
 }
 
 function toIndexCounts(result: IndexFolderResult | Manifest): IndexCounts {
@@ -284,15 +307,15 @@ function collectDocumentNodes(rootTree: RootTreeNode): RootTreeNode[] {
 }
 
 export async function createIndex(folder: string, options: CreateIndexOptions = {}): Promise<CreateIndexResult> {
-  return toCreateIndexResult(await indexFolder(folder, toPageIndexOptions(options)));
+  return toCreateIndexResult(await indexFolder(folder, await toPageIndexOptions(options)));
 }
 
 export async function queryIndex(target: string, question: string, options: QueryIndexOptions = {}): Promise<QueryResult> {
-  return await queryFolder(target, question, toPageIndexOptions(options));
+  return await queryFolder(target, question, await toPageIndexOptions(options));
 }
 
 export async function watchIndex(folder: string, options: WatchIndexOptions = {}): Promise<WatchIndexHandle> {
-  const handle: WatchFolderHandle = await startWatchFolder(folder, toPageIndexOptions(options));
+  const handle: WatchFolderHandle = await startWatchFolder(folder, await toPageIndexOptions(options));
 
   return {
     rootDir: handle.rootDir,

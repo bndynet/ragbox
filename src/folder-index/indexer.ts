@@ -39,7 +39,11 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
   const rootTreePath = path.join(outputDir, "root-tree.json");
   const excludedDirs = isStrictSubPath(rootDir, outputDir) ? [outputDir] : [];
   const previousManifest = await readManifest(rootDir, config.outputDir);
-  const scannedFiles = await scanMarkdownFiles(rootDir, { excludedDirs });
+  const scannedFiles = await scanMarkdownFiles(rootDir, {
+    exclude: config.exclude,
+    excludedDirs,
+    include: config.include
+  });
   const diff = diffManifest(previousManifest, scannedFiles);
   const previousByPath = new Map(previousManifest.documents.map((record) => [record.path, record]));
 

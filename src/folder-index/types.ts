@@ -38,6 +38,8 @@ export type PageIndexOptions = {
   baseUrl?: string;
   apiKey?: string;
   concurrency?: number;
+  exclude?: string[];
+  include?: string[];
   outputDir?: string;
   outputArg?: string;
   extraArgs?: string[];

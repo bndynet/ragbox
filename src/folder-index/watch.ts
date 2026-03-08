@@ -4,6 +4,7 @@ import { loadPageIndexConfig } from "./config";
 import { indexFolder } from "./indexer";
 import { resolvePageIndexDir } from "./manifest";
 import { isStrictSubPath, isSubPath } from "./path-utils";
+import { isIncludedPath } from "./scan";
 import { IndexCounts, IndexFolderResult, PageIndexOptions, WatchProgressEvent } from "./types";
 
 const WATCH_IGNORED = /(^|[/\\])(node_modules|\.git|\.pageindex|dist|build)([/\\]|$)/;
@@ -217,6 +218,9 @@ export async function startWatchFolder(folder: string, options: PageIndexOptions
 
   function scheduleIndex(eventName: "add" | "change" | "unlink", changedPath: string): void {
     if (stopped) {
+      return;
+    }
+    if (!isIncludedPath(changedPath, { exclude: config.exclude, include: config.include })) {
       return;
     }
 

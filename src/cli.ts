@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import fs from "node:fs/promises";
 import { Command } from "commander";
+import { resolveRagboxConfig, writeDefaultRagboxConfig } from "./config-file";
 import { indexFolder } from "./folder-index/indexer";
 import { queryFolder } from "./folder-index/query";
 import { watchFolder } from "./folder-index/watch";
@@ -52,16 +54,25 @@ type SharedCommandOptions = {
   baseUrl?: string;
   json?: boolean;
   model?: string;
+  source?: string;
 };
 
 type IndexCommandOptions = SharedCommandOptions & {
   concurrency?: number;
   outputDir?: string;
+  pageindexCli?: string;
   pageindexPython?: string;
 };
 
 type WatchCommandOptions = IndexCommandOptions & {
   jsonl?: boolean;
+};
+
+type InitCommandOptions = {
+  docsDir?: string;
+  force?: boolean;
+  output?: string;
+  outputDir?: string;
 };
 
 type IndexJsonOutput = {
@@ -80,6 +91,10 @@ function addLlmOptions(command: Command): Command {
     .option("--api-key <key>", "OpenAI-compatible API key")
     .option("--base-url <url>", "OpenAI-compatible API base URL")
     .option("--model <model>", "LLM model");
+}
+
+function addProjectOptions(command: Command): Command {
+  return command.option("--source <name>", "ragbox config source");
 }
 
 function writeJson(value: unknown): void {
@@ -125,47 +140,140 @@ function logProgressAsJsonLine(event: IndexProgressEvent): void {
   });
 }
 
-function buildOptions(commandOptions: IndexCommandOptions, progress: (event: IndexProgressEvent) => void = logProgress): PageIndexOptions {
+async function loadCommandConfig(command: Command, commandOptions: SharedCommandOptions): Promise<{
+  rootDir?: string;
+  options: PageIndexOptions;
+}> {
+  const globalOptions = command.parent?.opts<{ config?: string }>() ?? {};
+  const resolved = await resolveRagboxConfig({
+    configPath: globalOptions.config,
+    source: commandOptions.source
+  });
+
   return {
-    apiKey: commandOptions.apiKey,
-    baseUrl: commandOptions.baseUrl,
-    concurrency: commandOptions.concurrency,
-    model: commandOptions.model,
-    outputDir: commandOptions.outputDir,
-    pythonPath: commandOptions.pageindexPython,
-    progress
+    rootDir: resolved.rootDir,
+    options: resolved.pageIndexOptions
   };
 }
 
-function buildQueryOptions(commandOptions: SharedCommandOptions): PageIndexOptions {
-  return {
+function mergeDefined<T extends object>(...values: T[]): T {
+  const merged: Record<string, unknown> = {};
+  for (const value of values) {
+    for (const [key, nestedValue] of Object.entries(value)) {
+      if (nestedValue !== undefined) {
+        merged[key] = nestedValue;
+      }
+    }
+  }
+  return merged as T;
+}
+
+function buildOptions(
+  configOptions: PageIndexOptions,
+  commandOptions: IndexCommandOptions,
+  progress: (event: IndexProgressEvent) => void = logProgress
+): PageIndexOptions {
+  return mergeDefined<PageIndexOptions>({
+    ...configOptions,
+    progress
+  }, {
+    apiKey: commandOptions.apiKey,
+    baseUrl: commandOptions.baseUrl,
+    concurrency: commandOptions.concurrency,
+    cliPath: commandOptions.pageindexCli,
+    model: commandOptions.model,
+    outputDir: commandOptions.outputDir,
+    pythonPath: commandOptions.pageindexPython
+  });
+}
+
+function buildQueryOptions(configOptions: PageIndexOptions, commandOptions: SharedCommandOptions): PageIndexOptions {
+  return mergeDefined<PageIndexOptions>({
+    ...configOptions
+  }, {
     apiKey: commandOptions.apiKey,
     baseUrl: commandOptions.baseUrl,
     model: commandOptions.model
-  };
+  });
+}
+
+function requireFolder(folder: string | undefined, commandName: string): string {
+  if (!folder) {
+    throw new Error(`Missing folder. Pass a folder argument or configure a source rootDir before running ragbox ${commandName}.`);
+  }
+  return folder;
+}
+
+function requireTarget(target: string | undefined): string {
+  if (!target) {
+    throw new Error("Missing query target. Pass a target argument or configure a source with outputDir/rootDir.");
+  }
+  return target;
+}
+
+function requireQuestion(question: string | undefined): string {
+  if (!question) {
+    throw new Error("Missing question.");
+  }
+  return question;
+}
+
+async function pathExists(value: string): Promise<boolean> {
+  try {
+    await fs.access(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function main(): Promise<void> {
   const program = new Command();
 
-  program.name("ragbox").description("Index and query a Markdown/MDX folder with PageIndex").version("0.1.0");
+  program
+    .name("ragbox")
+    .description("Index and query a Markdown/MDX folder with PageIndex")
+    .version("0.1.0")
+    .option("--config <path-or-name>", "ragbox config file path, or a name like prod for ragbox.config.prod.json");
 
-  addLlmOptions(
-    program
+  program
+    .command("init")
+    .description("create a ragbox.config.json file")
+    .option("--docs-dir <folder>", "default docs folder in the generated config", "./docs")
+    .option("-f, --force", "overwrite an existing config file")
+    .option("-o, --output <path>", "config file path")
+    .option("--output-dir <folder>", "default index output directory in the generated config", "./.ragbox-index")
+    .action(async (commandOptions: InitCommandOptions) => {
+      const configPath = await writeDefaultRagboxConfig({
+        configPath: commandOptions.output,
+        docsDir: commandOptions.docsDir,
+        force: commandOptions.force,
+        outputDir: commandOptions.outputDir
+      });
+      console.log(`Created ${configPath}`);
+    });
+
+  addProjectOptions(
+    addLlmOptions(
+      program
       .command("index")
-      .argument("<folder>", "folder to index")
+      .argument("[folder]", "folder to index")
       .option("-c, --concurrency <number>", "PageIndex concurrency", parseConcurrency)
+      .option("--pageindex-cli <path>", "PageIndex script path")
       .option("-o, --output-dir <folder>", "folder for ragbox index files")
       .option("--pageindex-python <path>", "Python executable used to run PageIndex")
       .option("--json", "print a stable JSON result")
+    )
   )
-    .action(async (folder: string, commandOptions: IndexCommandOptions) => {
-      const result = await indexFolder(folder, buildOptions(commandOptions));
+    .action(async (folder: string | undefined, commandOptions: IndexCommandOptions, command: Command) => {
+      const loaded = await loadCommandConfig(command, commandOptions);
+      const indexFolderPath = requireFolder(folder ?? loaded.rootDir, "index");
+      const result = await indexFolder(indexFolderPath, buildOptions(loaded.options, commandOptions));
       if (commandOptions.json) {
         writeJson(indexJsonOutput(result));
         return;
       }
-      console.log(`Indexed ${folder}`);
+      console.log(`Indexed ${indexFolderPath}`);
       console.log(`ready=${result.ready}`);
       console.log(`failed=${result.failed}`);
       console.log(`added=${result.added}`);
@@ -175,15 +283,31 @@ async function main(): Promise<void> {
       console.log(`unchanged=${result.unchanged}`);
     });
 
-  addLlmOptions(
-    program
+  addProjectOptions(
+    addLlmOptions(
+      program
       .command("query")
-      .argument("<target>", "docs folder or ragbox output directory")
-      .argument("<question>", "question to answer")
+      .argument("[target]", "docs folder or ragbox output directory")
+      .argument("[question]", "question to answer")
       .option("--json", "print a stable JSON result with selections and sources")
+    )
   )
-    .action(async (target: string, question: string, commandOptions: SharedCommandOptions) => {
-      const result = await queryFolder(target, question, buildQueryOptions(commandOptions));
+    .action(async (target: string | undefined, question: string | undefined, commandOptions: SharedCommandOptions, command: Command) => {
+      const loaded = await loadCommandConfig(command, commandOptions);
+      let queryTarget = target;
+      let queryQuestion = question;
+      const configuredTarget = loaded.options.outputDir ?? loaded.rootDir;
+
+      if (!queryQuestion && queryTarget && configuredTarget) {
+        const singleArgIsQuestion = commandOptions.source || !(await pathExists(queryTarget));
+        if (singleArgIsQuestion) {
+          queryQuestion = queryTarget;
+          queryTarget = undefined;
+        }
+      }
+
+      queryTarget ??= configuredTarget;
+      const result = await queryFolder(requireTarget(queryTarget), requireQuestion(queryQuestion), buildQueryOptions(loaded.options, commandOptions));
       if (commandOptions.json) {
         writeJson(result);
         return;
@@ -191,21 +315,26 @@ async function main(): Promise<void> {
       console.log(result.answer);
     });
 
-  addLlmOptions(
-    program
+  addProjectOptions(
+    addLlmOptions(
+      program
       .command("watch")
-      .argument("<folder>", "folder to watch")
+      .argument("[folder]", "folder to watch")
       .option("-c, --concurrency <number>", "PageIndex concurrency", parseConcurrency)
+      .option("--pageindex-cli <path>", "PageIndex script path")
       .option("-o, --output-dir <folder>", "folder for ragbox index files")
       .option("--pageindex-python <path>", "Python executable used to run PageIndex")
       .option("--jsonl", "print stable JSON Lines watch and index progress events")
+    )
   )
-    .action(async (folder: string, commandOptions: WatchCommandOptions) => {
-      const options = buildOptions(commandOptions, commandOptions.jsonl ? logProgressAsJsonLine : logProgress);
+    .action(async (folder: string | undefined, commandOptions: WatchCommandOptions, command: Command) => {
+      const loaded = await loadCommandConfig(command, commandOptions);
+      const watchFolderPath = requireFolder(folder ?? loaded.rootDir, "watch");
+      const options = buildOptions(loaded.options, commandOptions, commandOptions.jsonl ? logProgressAsJsonLine : logProgress);
       if (commandOptions.jsonl) {
         options.watchProgress = writeJsonLine;
       }
-      await watchFolder(folder, options);
+      await watchFolder(watchFolderPath, options);
     });
 
   await program.parseAsync(process.argv);

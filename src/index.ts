@@ -7,6 +7,14 @@ export {
 } from "./sdk";
 
 export type {
+  RagboxConfig,
+  RagboxConfigSource,
+  RagboxIndexConfig,
+  RagboxLlmConfig,
+  RagboxPageIndexConfig
+} from "./config-file";
+
+export type {
   CreateIndexOptions,
   CreateIndexResult,
   IndexCounts,
