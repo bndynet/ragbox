@@ -51,6 +51,15 @@ fs.writeFileSync(outputPath, JSON.stringify({
   );
 }
 
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function writeValidIndexFixture(baseDir: string, outputInsideDocs = false): Promise<{
   rootDir: string;
   outputDir: string;
@@ -379,6 +388,120 @@ test("watchIndex returns a closeable handle and reports initial readiness", asyn
   await handle.close();
   await handle.closed;
   assert.ok(events.includes("watch-stop"));
+});
+
+test("watchIndex supports lock files, staging promotion, and health files", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const stagingOutputDir = path.join(tempDir, ".ragbox-index-staging");
+  const lockFile = path.join(tempDir, "watch.lock");
+  const healthFile = path.join(tempDir, "watch-health.json");
+  const scriptPath = path.join(tempDir, "fake-pageindex.cjs");
+  const events: string[] = [];
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await writeFakePageIndexScript(scriptPath, "staging ok");
+
+  const handle = await ragbox.watchIndex(docsDir, {
+    healthFile,
+    lockFile,
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexPython: process.execPath,
+    staging: true,
+    stagingOutputDir,
+    onEvent: (event) => events.push(event.type)
+  });
+
+  try {
+    const ready = await handle.ready;
+
+    assert.equal(ready.ok, true);
+    assert.ok(await pathExists(path.join(outputDir, "manifest.json")));
+    assert.equal(await pathExists(stagingOutputDir), false);
+    assert.ok(await pathExists(lockFile));
+    const readyHealth = JSON.parse(await fs.readFile(healthFile, "utf8")) as {
+      ok: boolean;
+      status: string;
+      result?: { ready: number };
+    };
+    assert.equal(readyHealth.ok, true);
+    assert.equal(readyHealth.status, "ready");
+    assert.equal(readyHealth.result?.ready, 1);
+    assert.ok(events.includes("watch-lock-acquired"));
+    assert.ok(events.includes("watch-output-promoted"));
+    assert.ok(events.includes("watch-health"));
+  } finally {
+    await handle.close();
+    await handle.closed;
+  }
+
+  const stoppedHealth = JSON.parse(await fs.readFile(healthFile, "utf8")) as {
+    ok: boolean;
+    status: string;
+  };
+  assert.equal(stoppedHealth.ok, false);
+  assert.equal(stoppedHealth.status, "stopped");
+  assert.equal(await pathExists(lockFile), false);
+  assert.ok(events.includes("watch-lock-released"));
+});
+
+test("watchIndex retries failed document indexing", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "flaky-pageindex.cjs");
+  const attemptPath = path.join(tempDir, "attempt.txt");
+  const events: string[] = [];
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await fs.writeFile(
+    scriptPath,
+    `const fs = require("node:fs");
+const attemptPath = ${JSON.stringify(attemptPath)};
+const attempts = fs.existsSync(attemptPath) ? Number(fs.readFileSync(attemptPath, "utf8")) : 0;
+fs.writeFileSync(attemptPath, String(attempts + 1));
+if (attempts === 0) {
+  process.stderr.write("transient failure");
+  process.exit(1);
+}
+const args = process.argv.slice(2);
+const outputPath = args[args.indexOf("--output") + 1];
+fs.writeFileSync(outputPath, JSON.stringify({
+  node_id: "root",
+  summary: "retry ok",
+  nodes: [{ node_id: "n1", title: "Body", text: "Body text" }]
+}));
+`,
+    "utf8"
+  );
+
+  const handle = await ragbox.watchIndex(docsDir, {
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexPython: process.execPath,
+    retryAttempts: 1,
+    retryDelayMs: 0,
+    onEvent: (event) => events.push(event.type)
+  });
+  const ready = await handle.ready;
+
+  assert.equal(ready.ok, true);
+  if (ready.ok) {
+    assert.equal(ready.result.counts.ready, 1);
+    assert.equal(ready.result.counts.failed, 0);
+    assert.equal(ready.result.counts.retryFailed, 1);
+  }
+  assert.equal(await fs.readFile(attemptPath, "utf8"), "2");
+  assert.ok(events.includes("watch-index-partial-failure"));
+  assert.ok(events.includes("watch-index-retry"));
+  assert.ok(events.includes("watch-index-done"));
+
+  await handle.close();
+  await handle.closed;
 });
 
 test("index CLI forwards shared LLM flags to PageIndex", async () => {

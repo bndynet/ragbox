@@ -55,7 +55,15 @@ export type QueryIndexOptions = SdkOptions & {
 };
 
 export type WatchIndexOptions = CreateIndexOptions & {
+  debounceMs?: number;
+  healthFile?: string;
+  lockFile?: string;
   onEvent?: (event: WatchProgressEvent) => void;
+  retryAttempts?: number;
+  retryDelayMs?: number;
+  staging?: boolean;
+  stagingOutputDir?: string;
+  webhookUrl?: string;
 };
 
 export type CreateIndexResult = {
@@ -173,7 +181,15 @@ async function toPageIndexOptions(options: CreateIndexOptions | QueryIndexOption
     progress: createOptions.onProgress,
     pythonPath: createOptions.pageIndexPython,
     trace: queryOptions.trace,
-    watchProgress: watchOptions.onEvent
+    watchDebounceMs: watchOptions.debounceMs,
+    watchHealthFile: watchOptions.healthFile,
+    watchLockFile: watchOptions.lockFile,
+    watchProgress: watchOptions.onEvent,
+    watchRetryAttempts: watchOptions.retryAttempts,
+    watchRetryDelayMs: watchOptions.retryDelayMs,
+    watchStaging: watchOptions.staging,
+    watchStagingOutputDir: watchOptions.stagingOutputDir,
+    watchWebhookUrl: watchOptions.webhookUrl
   });
 }
 

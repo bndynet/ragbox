@@ -155,6 +155,14 @@ ragbox --config ./ragbox.config.prod.json query "怎么部署？"
 | API Base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API Key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | query 必填，PageIndex 通常也需要 |
 | 模型 | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
+| Watch debounce | `RAGBOX_WATCH_DEBOUNCE_MS` | `--debounce-ms` | `watch` | `500` |
+| Watch 重试次数 | `RAGBOX_WATCH_RETRY_ATTEMPTS` | `--retry-attempts` | `watch` | `0` |
+| Watch 重试延迟 | `RAGBOX_WATCH_RETRY_DELAY_MS` | `--retry-delay-ms` | `watch` | `1000` |
+| Watch 锁文件 | `RAGBOX_WATCH_LOCK_FILE` | `--lock-file` | `watch` | 无 |
+| Watch staging | `RAGBOX_WATCH_STAGING` | `--staging` | `watch` | 关闭 |
+| Watch staging 输出目录 | `RAGBOX_WATCH_STAGING_OUTPUT_DIR` | `--staging-output-dir` | `watch` | `<outputDir>.staging` |
+| Watch health 文件 | `RAGBOX_WATCH_HEALTH_FILE` | `--health-file` | `watch` | 无 |
+| Watch webhook | `RAGBOX_WATCH_WEBHOOK_URL` | `--webhook` | `watch` | 无 |
 
 生产环境建议用环境变量或 secret manager 管理 API key。`--api-key` 适合本地测试，但可能出现在 shell history 或进程列表里。
 
@@ -305,11 +313,30 @@ ragbox watch ./docs --output-dir ./.ragbox-index
 ragbox watch ./docs --output-dir /var/lib/ragbox/docs-index --concurrency 2
 ragbox watch ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 ragbox watch ./docs --output-dir ./.ragbox-index --jsonl
+ragbox watch ./docs \
+  --output-dir /var/lib/ragbox/docs-index \
+  --staging \
+  --retry-attempts 3 \
+  --retry-delay-ms 2000 \
+  --lock-file /var/run/ragbox/docs.lock \
+  --health-file /var/run/ragbox/docs-health.json \
+  --jsonl
 ```
 
 `watch` 监听 `.md` 和 `.mdx` 文件的新增、修改、删除。它会忽略 `node_modules`、`.git`、`.pageindex`、`dist`、`build`，以及位于文档目录内的自定义输出目录。
 
-使用 `--jsonl` 可以为集成场景输出带版本号的 JSON Lines 事件流。事件包括 `watch-start`、`watch-file-event`、`watch-index-start`、`watch-index-done`、`watch-index-failed`、`watch-stop` 和 `index-progress`。
+使用 `--jsonl` 可以为集成场景输出带版本号的 JSON Lines 事件流。事件包括 `watch-start`、`watch-lock-acquired`、`watch-file-event`、`watch-index-start`、`watch-index-retry`、`watch-index-partial-failure`、`watch-output-promoted`、`watch-index-done`、`watch-index-failed`、`watch-health`、`watch-webhook-failed`、`watch-lock-released`、`watch-stop` 和 `index-progress`。
+
+生产化 watch 选项：
+
+- `--retry-attempts` 和 `--retry-delay-ms` 会重试抛错的索引运行，以及仍然留下 failed document 的运行。
+- `--lock-file` 会在 watch 运行期间创建排他锁文件。第二个 watcher 如果发现锁已存在，会直接退出。
+- `--staging` 会先索引到 staging 目录，只有在零 failed document 的干净运行后才 promote 到 active output。默认 staging 目录是 `<outputDir>.staging`；为了基于 rename 切换，建议和 `outputDir` 放在同一文件系统。
+- `--health-file` 会写 readiness JSON，包含 `status`、`ok`、`pid`、`lastSuccessAt`、`lastFailureAt` 和最新统计。
+- `--webhook` 会把每个 watch 事件作为 JSON POST 出去。Webhook 投递失败会报告为 `watch-webhook-failed` 事件，不会中断 watch。
+- `--debounce-ms` 控制文件变化后等待多久再重新索引。
+
+`ragbox watch` 有意以前台进程运行，这更适合 systemd service 或 container。建议使用 supervisor/container 的 restart policy，而不是在 CLI 里自行 fork daemon。
 
 ## 输出目录
 
@@ -343,6 +370,7 @@ ragbox query ./.ragbox-index "..."
 
 建议：
 
+- 长期运行 `watch` 时，优先使用 `--jsonl`、`--lock-file`、`--health-file`、`--retry-attempts` 和 `--staging`
 - 把输出目录放在源码目录外，例如 `/var/lib/ragbox/docs-index`
 - 多副本应用需要读取同一份完整索引，可以挂载只读卷或随部署产物分发
 - API key 放环境变量或 secret manager

@@ -46,7 +46,15 @@ export type PageIndexOptions = {
   env?: NodeJS.ProcessEnv;
   progress?: (event: IndexProgressEvent) => void;
   trace?: boolean;
+  watchDebounceMs?: number;
+  watchHealthFile?: string;
+  watchLockFile?: string;
   watchProgress?: (event: WatchProgressEvent) => void;
+  watchRetryAttempts?: number;
+  watchRetryDelayMs?: number;
+  watchStaging?: boolean;
+  watchStagingOutputDir?: string;
+  watchWebhookUrl?: string;
 };
 
 export type IndexProgressEvent =
@@ -92,6 +100,23 @@ export type WatchProgressEvent =
       type: "watch-start";
       rootDir: string;
       outputDir: string;
+      pid?: number;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-lock-acquired";
+      rootDir: string;
+      outputDir: string;
+      lockFile: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-lock-released";
+      rootDir: string;
+      outputDir: string;
+      lockFile: string;
     }
   | {
       version: 1;
@@ -109,6 +134,20 @@ export type WatchProgressEvent =
       rootDir: string;
       outputDir: string;
       reason: "initial" | "change";
+      attempt: number;
+      maxAttempts: number;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-index-retry";
+      rootDir: string;
+      outputDir: string;
+      reason: "initial" | "change";
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+      error: string;
     }
   | {
       version: 1;
@@ -117,9 +156,23 @@ export type WatchProgressEvent =
       rootDir: string;
       outputDir: string;
       reason: "initial" | "change";
+      attempt: number;
+      maxAttempts: number;
       result: IndexCounts;
       manifestPath: string;
       rootTreePath: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-index-partial-failure";
+      rootDir: string;
+      outputDir: string;
+      reason: "initial" | "change";
+      attempt: number;
+      maxAttempts: number;
+      failed: number;
+      result: IndexCounts;
     }
   | {
       version: 1;
@@ -128,6 +181,44 @@ export type WatchProgressEvent =
       rootDir: string;
       outputDir: string;
       reason: "initial" | "change";
+      attempt: number;
+      maxAttempts: number;
+      error: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-output-promoted";
+      rootDir: string;
+      outputDir: string;
+      stagingOutputDir: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-health";
+      rootDir: string;
+      outputDir: string;
+      healthFile: string;
+      status: WatchHealthStatus;
+      ok: boolean;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-health-failed";
+      rootDir: string;
+      outputDir: string;
+      healthFile: string;
+      error: string;
+    }
+  | {
+      version: 1;
+      timestamp: string;
+      type: "watch-webhook-failed";
+      rootDir: string;
+      outputDir: string;
+      url: string;
       error: string;
     }
   | {
@@ -137,6 +228,24 @@ export type WatchProgressEvent =
       rootDir: string;
       outputDir: string;
     };
+
+export type WatchHealthStatus = "starting" | "indexing" | "ready" | "degraded" | "failed" | "stopped";
+
+export type WatchHealthFile = {
+  version: 1;
+  ok: boolean;
+  status: WatchHealthStatus;
+  rootDir: string;
+  outputDir: string;
+  pid: number;
+  startedAt: string;
+  updatedAt: string;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  reason?: "initial" | "change";
+  result?: IndexCounts;
+  error?: string;
+};
 
 export type ScannedFile = {
   docId: string;

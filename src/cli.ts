@@ -19,6 +19,26 @@ function parseConcurrency(value: string): number {
   return parsed;
 }
 
+function parseNonNegativeInteger(value: string, optionName: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${optionName} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function parseRetryAttempts(value: string): number {
+  return parseNonNegativeInteger(value, "--retry-attempts");
+}
+
+function parseRetryDelayMs(value: string): number {
+  return parseNonNegativeInteger(value, "--retry-delay-ms");
+}
+
+function parseDebounceMs(value: string): number {
+  return parseNonNegativeInteger(value, "--debounce-ms");
+}
+
 function isVerbose(): boolean {
   return process.env.RAGBOX_VERBOSE === "1" || process.env.RAGBOX_E2E_VERBOSE === "1";
 }
@@ -69,7 +89,15 @@ type IndexCommandOptions = SharedCommandOptions & {
 };
 
 type WatchCommandOptions = IndexCommandOptions & {
+  debounceMs?: number;
+  healthFile?: string;
   jsonl?: boolean;
+  lockFile?: string;
+  retryAttempts?: number;
+  retryDelayMs?: number;
+  staging?: boolean;
+  stagingOutputDir?: string;
+  webhook?: string;
 };
 
 type QueryCommandOptions = SharedCommandOptions & {
@@ -232,7 +260,7 @@ function mergeDefined<T extends object>(...values: T[]): T {
 
 function buildOptions(
   configOptions: PageIndexOptions,
-  commandOptions: IndexCommandOptions,
+  commandOptions: IndexCommandOptions & Partial<WatchCommandOptions>,
   progress: (event: IndexProgressEvent) => void = logProgress
 ): PageIndexOptions {
   return mergeDefined<PageIndexOptions>({
@@ -245,7 +273,15 @@ function buildOptions(
     cliPath: commandOptions.pageindexCli,
     model: commandOptions.model,
     outputDir: commandOptions.outputDir,
-    pythonPath: commandOptions.pageindexPython
+    pythonPath: commandOptions.pageindexPython,
+    watchDebounceMs: commandOptions.debounceMs,
+    watchHealthFile: commandOptions.healthFile,
+    watchLockFile: commandOptions.lockFile,
+    watchRetryAttempts: commandOptions.retryAttempts,
+    watchRetryDelayMs: commandOptions.retryDelayMs,
+    watchStaging: commandOptions.staging ?? Boolean(commandOptions.stagingOutputDir),
+    watchStagingOutputDir: commandOptions.stagingOutputDir,
+    watchWebhookUrl: commandOptions.webhook
   });
 }
 
@@ -782,7 +818,15 @@ async function main(): Promise<void> {
       .option("--pageindex-cli <path>", "PageIndex script path")
       .option("-o, --output-dir <folder>", "folder for ragbox index files")
       .option("--pageindex-python <path>", "Python executable used to run PageIndex")
+      .option("--debounce-ms <ms>", "watch change debounce in milliseconds", parseDebounceMs)
+      .option("--health-file <path>", "write a watch health JSON file")
       .option("--jsonl", "print stable JSON Lines watch and index progress events")
+      .option("--lock-file <path>", "create an exclusive lock file while watch is running")
+      .option("--retry-attempts <number>", "retry failed watch index runs", parseRetryAttempts)
+      .option("--retry-delay-ms <ms>", "delay between watch retries in milliseconds", parseRetryDelayMs)
+      .option("--staging", "index into a staging directory and promote it after a clean run")
+      .option("--staging-output-dir <folder>", "staging directory used with --staging")
+      .option("--webhook <url>", "POST watch events to a webhook URL")
     )
   )
     .action(async (folder: string | undefined, commandOptions: WatchCommandOptions, command: Command) => {

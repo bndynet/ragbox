@@ -157,6 +157,14 @@ Resolution order is command-line flags, then `ragbox.config.json`, then environm
 | API base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | required for query and usually PageIndex |
 | Model | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
+| Watch debounce | `RAGBOX_WATCH_DEBOUNCE_MS` | `--debounce-ms` | `watch` | `500` |
+| Watch retry attempts | `RAGBOX_WATCH_RETRY_ATTEMPTS` | `--retry-attempts` | `watch` | `0` |
+| Watch retry delay | `RAGBOX_WATCH_RETRY_DELAY_MS` | `--retry-delay-ms` | `watch` | `1000` |
+| Watch lock file | `RAGBOX_WATCH_LOCK_FILE` | `--lock-file` | `watch` | none |
+| Watch staging | `RAGBOX_WATCH_STAGING` | `--staging` | `watch` | off |
+| Watch staging output | `RAGBOX_WATCH_STAGING_OUTPUT_DIR` | `--staging-output-dir` | `watch` | `<outputDir>.staging` |
+| Watch health file | `RAGBOX_WATCH_HEALTH_FILE` | `--health-file` | `watch` | none |
+| Watch webhook | `RAGBOX_WATCH_WEBHOOK_URL` | `--webhook` | `watch` | none |
 
 For production, prefer environment variables or a secret manager for API keys. Passing `--api-key` is useful for local testing, but command-line secrets can appear in shell history and process listings.
 
@@ -300,11 +308,30 @@ ragbox watch ./docs --output-dir ./.ragbox-index
 ragbox watch ./docs --output-dir /var/lib/ragbox/docs-index --concurrency 2
 ragbox watch ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 ragbox watch ./docs --output-dir ./.ragbox-index --jsonl
+ragbox watch ./docs \
+  --output-dir /var/lib/ragbox/docs-index \
+  --staging \
+  --retry-attempts 3 \
+  --retry-delay-ms 2000 \
+  --lock-file /var/run/ragbox/docs.lock \
+  --health-file /var/run/ragbox/docs-health.json \
+  --jsonl
 ```
 
 Watch mode listens for Markdown/MDX add, change, and unlink events. It ignores `node_modules`, `.git`, `.pageindex`, `dist`, `build`, and a custom output directory when it is inside the watched root.
 
-Use `--jsonl` to stream versioned JSON Lines events for integrations. The stream includes `watch-start`, `watch-file-event`, `watch-index-start`, `watch-index-done`, `watch-index-failed`, `watch-stop`, and `index-progress` events.
+Use `--jsonl` to stream versioned JSON Lines events for integrations. The stream includes `watch-start`, `watch-lock-acquired`, `watch-file-event`, `watch-index-start`, `watch-index-retry`, `watch-index-partial-failure`, `watch-output-promoted`, `watch-index-done`, `watch-index-failed`, `watch-health`, `watch-webhook-failed`, `watch-lock-released`, `watch-stop`, and `index-progress` events.
+
+Production watch options:
+
+- `--retry-attempts` and `--retry-delay-ms` retry thrown index errors and runs that leave failed documents.
+- `--lock-file` creates an exclusive lock while watch is running. A second watcher exits if the lock already exists.
+- `--staging` indexes into a staging directory and only promotes it after a clean run with zero failed documents. The default staging directory is `<outputDir>.staging`; keep it on the same filesystem as `outputDir` for rename-based promotion.
+- `--health-file` writes a readiness JSON file with `status`, `ok`, `pid`, `lastSuccessAt`, `lastFailureAt`, and latest counts.
+- `--webhook` POSTs every watch event as JSON. Webhook delivery failures are reported as `watch-webhook-failed` events and do not stop watch.
+- `--debounce-ms` controls how long watch waits after file changes before reindexing.
+
+`ragbox watch` intentionally runs in the foreground, which works well as a systemd service or container process. Use your supervisor's restart policy instead of shell-level daemonization.
 
 ## Output
 
@@ -335,6 +362,7 @@ Common patterns:
 
 - Index during deploy, then serve/query the completed output directory.
 - Run `ragbox watch` as a background service if docs change outside deploys.
+- For long-running watch, prefer `--jsonl`, `--lock-file`, `--health-file`, `--retry-attempts`, and `--staging`.
 - Store the output directory outside the source tree, for example `/var/lib/ragbox/docs-index`.
 - Mount or copy the completed output directory to every app replica that needs querying.
 - Keep API keys in environment variables or your secret manager.
