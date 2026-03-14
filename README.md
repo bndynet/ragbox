@@ -51,6 +51,16 @@ ragbox query ./.ragbox-index "How do I configure authentication?"
 ragbox watch ./docs --output-dir ./.ragbox-index
 ```
 
+For a project you want to keep running, use the config-first flow:
+
+```bash
+ragbox init
+# Edit ragbox.config.json with your docs path, PageIndex path, and model settings.
+ragbox start
+```
+
+`start` does the full local service loop: initial index, watch for updates, and serve the query API.
+
 You can pass the model settings as flags instead of environment variables:
 
 ```bash
@@ -77,7 +87,8 @@ ragbox query ./.ragbox-index "How do I configure authentication?" \
 | Check whether an index is usable | `ragbox status ./.ragbox-index` |
 | Diagnose local setup issues | `ragbox doctor` |
 | Keep docs indexed while editing | `ragbox watch ./docs --output-dir ./.ragbox-index --jsonl` |
-| Let another service query docs | `ragbox serve ./.ragbox-index --auth-token <token>` |
+| Run the full local service loop | `ragbox start --auth-token <token>` |
+| Serve an already-built index only | `ragbox serve ./.ragbox-index --auth-token <token>` |
 
 ## Project Config
 
@@ -116,6 +127,7 @@ After that, commands can use the configured docs automatically:
 ragbox index
 ragbox query "How do I configure authentication?"
 ragbox watch --jsonl
+ragbox start
 ragbox --config ./ragbox.config.json index
 ```
 
@@ -163,6 +175,7 @@ ragbox query "What are the deployment steps?"
 ragbox query --source api "How do I configure authentication?"
 ragbox query --source docs,api "How does authentication work end to end?"
 ragbox query --all-sources "What are the deployment steps?"
+ragbox start --all-sources
 ```
 
 When multiple sources are configured, `ragbox query "..."` queries all of them. `--all-sources` is an explicit alias for the same behavior; use `--source` to limit the search.
@@ -333,6 +346,25 @@ Single-source `QueryResult` fields:
 
 Fatal query errors include the stage that failed, for example `Query failed during select-documents: ...`.
 
+### `ragbox start [folder]`
+
+Runs the complete local service loop: index first, watch for future changes, and serve the HTTP query API.
+
+```bash
+ragbox start
+ragbox start --auth-token dev-token
+ragbox start --host 127.0.0.1 --port 8787 --jsonl
+ragbox start --source docs
+ragbox start --all-sources
+ragbox start ./docs --output-dir ./.ragbox-index
+```
+
+Use `start` after `ragbox init` when you want one foreground process for local development, an internal service, or a container. It waits for the initial index run before starting HTTP `serve`, then reloads the serve index snapshot after successful watch updates.
+
+With multiple configured sources, `ragbox start` starts all sources by default. Use `--source docs,api` to limit the running sources, or `--all-sources` to make the global behavior explicit.
+
+`start` does not create or edit `ragbox.config.json`; run `ragbox init` first, then edit the config before starting.
+
 ### `ragbox serve [target]`
 
 Starts a foreground HTTP server for external systems. Index first with `ragbox index`, or keep the index fresh with `ragbox watch`.
@@ -453,6 +485,7 @@ The output directory can contain source document text. Do not serve it publicly 
 
 Common patterns:
 
+- Run `ragbox start` when one foreground process should index, watch, and serve.
 - Index during deploy, then serve/query the completed output directory with `ragbox serve` or SDK calls.
 - Run `ragbox watch` as a background service if docs change outside deploys.
 - For long-running watch, prefer `--jsonl`, `--lock-file`, `--health-file`, `--retry-attempts`, and `--staging`.

@@ -5,11 +5,12 @@ import { Command } from "commander";
 import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig, writeDefaultRagboxConfig } from "./config-file";
 import { loadPageIndexConfig } from "./folder-index/config";
 import { indexFolder } from "./folder-index/indexer";
+import { PAGEINDEX_DIR } from "./folder-index/manifest";
 import { queryMultipleIndexes, MultiQueryTarget } from "./folder-index/multi-query";
 import { queryFolder } from "./folder-index/query";
-import { watchFolder } from "./folder-index/watch";
-import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions } from "./folder-index/types";
-import { startServe } from "./serve";
+import { startWatchFolder, watchFolder, WatchFolderHandle } from "./folder-index/watch";
+import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions, WatchProgressEvent } from "./folder-index/types";
+import { startServe, ServeHandle } from "./serve";
 import { inspectIndex, validateIndex, InspectIndexResult, ValidateIndexResult } from "./sdk";
 
 function parseConcurrency(value: string): number {
@@ -125,6 +126,8 @@ type ServeCommandOptions = SharedCommandOptions & {
   port?: number;
 };
 
+type StartCommandOptions = WatchCommandOptions & ServeCommandOptions;
+
 type InitCommandOptions = {
   docsDir?: string;
   force?: boolean;
@@ -145,6 +148,13 @@ type IndexJsonOutput = {
 
 type DiagnosticTarget = {
   source?: string;
+  target: string;
+  options: PageIndexOptions;
+};
+
+type StartTarget = {
+  source?: string;
+  rootDir: string;
   target: string;
   options: PageIndexOptions;
 };
@@ -349,6 +359,10 @@ async function pathExists(value: string): Promise<boolean> {
   }
 }
 
+function startTargetOutputDir(rootDir: string, options: PageIndexOptions): string {
+  return path.resolve(options.outputDir ?? path.join(rootDir, PAGEINDEX_DIR));
+}
+
 async function loadConfiguredQueryTargets(command: Command, commandOptions: QueryCommandOptions): Promise<{
   answerOptions: PageIndexOptions;
   targets: MultiQueryTarget[];
@@ -472,6 +486,77 @@ async function loadDiagnosticTargets(
   ];
 }
 
+async function loadStartTargets(
+  command: Command,
+  commandOptions: StartCommandOptions,
+  folder: string | undefined
+): Promise<StartTarget[]> {
+  if (folder) {
+    if (commandOptions.allSources || commandOptions.source) {
+      throw new Error("A folder argument cannot be combined with --source or --all-sources.");
+    }
+    const loaded = await loadCommandConfig(command, commandOptions);
+    const rootDir = path.resolve(folder);
+    const options = buildOptions(loaded.options, commandOptions, commandOptions.jsonl ? logProgressAsJsonLine : logProgress);
+    return [
+      {
+        rootDir,
+        target: startTargetOutputDir(rootDir, options),
+        options
+      }
+    ];
+  }
+
+  const globalOptions = getGlobalOptions(command);
+  if (commandOptions.allSources && commandOptions.source) {
+    throw new Error("Use either --source or --all-sources, not both.");
+  }
+
+  let sourceNames = parseSourceNames(commandOptions.source);
+  if (commandOptions.allSources || sourceNames.length === 0) {
+    const { config } = await readRagboxConfig(globalOptions.config);
+    const configuredSourceNames = listRagboxConfigSourceNames(config);
+    if (commandOptions.allSources || configuredSourceNames.length > 1) {
+      sourceNames = configuredSourceNames;
+    }
+  }
+
+  if (sourceNames.length > 0) {
+    if (sourceNames.length > 1 && commandOptions.outputDir) {
+      throw new Error("--output-dir cannot be used when starting multiple sources.");
+    }
+
+    const targets: StartTarget[] = [];
+    for (const sourceName of sourceNames) {
+      const resolved = await resolveRagboxConfig({
+        configPath: globalOptions.config,
+        source: sourceName
+      });
+      const rootDir = requireFolder(resolved.rootDir, "start");
+      const options = buildOptions(resolved.pageIndexOptions, commandOptions, commandOptions.jsonl ? logProgressAsJsonLine : logProgress);
+      targets.push({
+        source: sourceName,
+        rootDir,
+        target: startTargetOutputDir(rootDir, options),
+        options
+      });
+    }
+    return targets;
+  }
+
+  const loaded = await loadCommandConfig(command, commandOptions);
+  const rootDir = requireFolder(loaded.rootDir, "start");
+  const options = buildOptions(loaded.options, commandOptions, commandOptions.jsonl ? logProgressAsJsonLine : logProgress);
+  return [
+    {
+      source: commandOptions.source,
+      rootDir,
+      target: startTargetOutputDir(rootDir, options),
+      options
+    }
+  ];
+}
+
 async function buildStatusOutput(targets: DiagnosticTarget[]): Promise<StatusJsonOutput> {
   const statusTargets: StatusTargetOutput[] = [];
 
@@ -512,6 +597,58 @@ function printStatusOutput(status: StatusJsonOutput): void {
       console.log(`  warning ${warning.code}: ${warning.message}`);
     }
   }
+}
+
+function startTargetLabel(target: StartTarget): string {
+  return target.source ? `${target.source} ${target.rootDir}` : target.rootDir;
+}
+
+function writeStartJsonLine(type: string, fields: Record<string, unknown> = {}): void {
+  writeJsonLine({
+    version: 1,
+    timestamp: new Date().toISOString(),
+    type,
+    ...fields
+  });
+}
+
+function printStartWatchEvent(event: WatchProgressEvent, source: string | undefined): void {
+  const prefix = source ? `[${source}] ` : "";
+  switch (event.type) {
+    case "watch-start":
+      console.log(`${prefix}watching ${event.rootDir}`);
+      break;
+    case "watch-file-event":
+      console.log(`${prefix}${event.eventName}: ${event.path}`);
+      break;
+    case "watch-index-start":
+      console.log(`${prefix}index ${event.reason} attempt=${event.attempt}/${event.maxAttempts}`);
+      break;
+    case "watch-index-done":
+      console.log(
+        `${prefix}indexed ready=${event.result.ready} failed=${event.result.failed} added=${event.result.added} modified=${event.result.modified} deleted=${event.result.deleted} unchanged=${event.result.unchanged}`
+      );
+      break;
+    case "watch-index-failed":
+      console.error(`${prefix}index failed: ${event.error}`);
+      break;
+    case "watch-index-retry":
+      console.error(`${prefix}index retry in ${event.delayMs}ms: ${event.error}`);
+      break;
+    case "watch-output-promoted":
+      console.log(`${prefix}promoted staging output ${event.stagingOutputDir}`);
+      break;
+    case "watch-stop":
+      console.log(`${prefix}watch stopped`);
+      break;
+  }
+}
+
+async function closeStartHandles(watchHandles: WatchFolderHandle[], serveHandle: ServeHandle | undefined): Promise<void> {
+  await Promise.allSettled([
+    ...watchHandles.map((handle) => handle.close()),
+    ...(serveHandle ? [serveHandle.close()] : [])
+  ]);
 }
 
 function isPathLikeCommand(value: string): boolean {
@@ -664,6 +801,132 @@ async function runQueryAction(
     return;
   }
   console.log(result.answer);
+}
+
+async function runStartAction(
+  folder: string | undefined,
+  commandOptions: StartCommandOptions,
+  command: Command
+): Promise<void> {
+  const globalOptions = getGlobalOptions(command);
+  const targets = await loadStartTargets(command, commandOptions, folder);
+  const watchHandles: WatchFolderHandle[] = [];
+  let serveHandle: ServeHandle | undefined;
+  let reloading = false;
+  let reloadAgain = false;
+
+  async function reloadServe(): Promise<void> {
+    if (!serveHandle) {
+      return;
+    }
+    if (reloading) {
+      reloadAgain = true;
+      return;
+    }
+
+    reloading = true;
+    do {
+      reloadAgain = false;
+      try {
+        const result = await serveHandle.reload();
+        if (commandOptions.jsonl) {
+          writeStartJsonLine("start-serve-reload", {
+            indexes: result.indexes.map((index) => ({
+              source: index.source,
+              target: index.target,
+              ok: index.ok
+            }))
+          });
+        } else {
+          console.log(`Reloaded serve index snapshot (${result.indexes.filter((index) => index.ok).length}/${result.indexes.length} ready)`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (commandOptions.jsonl) {
+          writeStartJsonLine("start-serve-reload-failed", { error: message });
+        } else {
+          console.error(`Serve reload failed: ${message}`);
+        }
+      }
+    } while (reloadAgain);
+    reloading = false;
+  }
+
+  try {
+    if (commandOptions.jsonl) {
+      writeStartJsonLine("start", {
+        sources: targets.map((target) => target.source).filter(Boolean),
+        targets: targets.map((target) => target.target)
+      });
+    } else {
+      console.log(`Starting ragbox for ${targets.length} source${targets.length === 1 ? "" : "s"}`);
+    }
+
+    for (const target of targets) {
+      const handle = await startWatchFolder(target.rootDir, {
+        ...target.options,
+        watchProgress: (event) => {
+          if (commandOptions.jsonl) {
+            writeJsonLine(event);
+          } else {
+            printStartWatchEvent(event, target.source);
+          }
+          if (event.type === "watch-index-done") {
+            void reloadServe();
+          }
+        }
+      });
+      watchHandles.push(handle);
+    }
+
+    const readyResults = await Promise.all(watchHandles.map((handle) => handle.ready));
+    const failedReady = readyResults.find((ready) => !ready.ok);
+    if (failedReady && !failedReady.ok) {
+      throw new Error(`Initial index failed: ${failedReady.error}`);
+    }
+
+    const sourceNames = targets.map((target) => target.source).filter((source): source is string => Boolean(source));
+    const singleTarget = targets.length === 1 ? targets[0] : undefined;
+    serveHandle = await startServe({
+      allSources: targets.length > 1 && sourceNames.length === 0,
+      apiKey: commandOptions.apiKey,
+      authToken: commandOptions.authToken,
+      baseUrl: commandOptions.baseUrl,
+      configPath: globalOptions.config,
+      host: commandOptions.host,
+      model: commandOptions.model,
+      port: commandOptions.port,
+      source: targets.length > 1 ? sourceNames : undefined,
+      target: singleTarget ? singleTarget.target : undefined
+    });
+
+    if (commandOptions.jsonl) {
+      writeStartJsonLine("start-serve", {
+        url: serveHandle.url,
+        host: serveHandle.host,
+        port: serveHandle.port
+      });
+    } else {
+      console.log(`Serving ragbox at ${serveHandle.url}`);
+    }
+
+    await new Promise<void>((resolve) => {
+      let closing = false;
+      const stop = (): void => {
+        if (closing) {
+          return;
+        }
+        closing = true;
+        void closeStartHandles(watchHandles, serveHandle).finally(resolve);
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      serveHandle?.server.once("close", stop);
+    });
+  } catch (error) {
+    await closeStartHandles(watchHandles, serveHandle);
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {
@@ -823,6 +1086,34 @@ async function main(): Promise<void> {
   )
     .action(async (target: string | undefined, question: string | undefined, commandOptions: QueryCommandOptions, command: Command) => {
       await runQueryAction(target, question, { ...commandOptions, trace: true, json: true }, command);
+    });
+
+  addProjectOptions(
+    addLlmOptions(
+      program
+        .command("start")
+        .argument("[folder]", "folder to index, watch, and serve")
+        .option("--all-sources", "start every configured source")
+        .option("--auth-token <token>", "bearer token required for non-health endpoints")
+        .option("-c, --concurrency <number>", "PageIndex concurrency", parseConcurrency)
+        .option("--pageindex-cli <path>", "PageIndex script path")
+        .option("-o, --output-dir <folder>", "folder for ragbox index files")
+        .option("--pageindex-python <path>", "Python executable used to run PageIndex")
+        .option("--debounce-ms <ms>", "watch change debounce in milliseconds", parseDebounceMs)
+        .option("--health-file <path>", "write a watch health JSON file")
+        .option("--host <host>", "host to bind", process.env.RAGBOX_SERVE_HOST ?? "127.0.0.1")
+        .option("--jsonl", "print stable JSON Lines start, watch, and index progress events")
+        .option("--lock-file <path>", "create an exclusive lock file while start is running")
+        .option("--port <number>", "port to bind", parseServePort)
+        .option("--retry-attempts <number>", "retry failed watch index runs", parseRetryAttempts)
+        .option("--retry-delay-ms <ms>", "delay between watch retries in milliseconds", parseRetryDelayMs)
+        .option("--staging", "index into a staging directory and promote it after a clean run")
+        .option("--staging-output-dir <folder>", "staging directory used with --staging")
+        .option("--webhook <url>", "POST watch events to a webhook URL")
+    )
+  )
+    .action(async (folder: string | undefined, commandOptions: StartCommandOptions, command: Command) => {
+      await runStartAction(folder, commandOptions, command);
     });
 
   addProjectOptions(

@@ -49,6 +49,16 @@ ragbox query ./.ragbox-index "怎么配置认证？"
 ragbox watch ./docs --output-dir ./.ragbox-index
 ```
 
+如果是一个要持续运行的项目，推荐走配置优先流程：
+
+```bash
+ragbox init
+# 编辑 ragbox.config.json，填好 docs 路径、PageIndex 路径和模型设置
+ragbox start
+```
+
+`start` 会贯穿完整本地服务流程：先索引，后续 watch 更新，并同时启动 query HTTP API。
+
 模型服务参数也可以不放环境变量，直接通过命令传入：
 
 ```bash
@@ -75,7 +85,8 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
 | 检查索引是否可用 | `ragbox status ./.ragbox-index` |
 | 诊断本地配置问题 | `ragbox doctor` |
 | 编辑文档时自动更新索引 | `ragbox watch ./docs --output-dir ./.ragbox-index --jsonl` |
-| 让其他服务通过 HTTP 查询文档 | `ragbox serve ./.ragbox-index --auth-token <token>` |
+| 跑完整本地服务流程 | `ragbox start --auth-token <token>` |
+| 只服务一个已经生成好的索引 | `ragbox serve ./.ragbox-index --auth-token <token>` |
 
 ## 项目配置
 
@@ -114,6 +125,7 @@ ragbox init
 ragbox index
 ragbox query "怎么配置认证？"
 ragbox watch --jsonl
+ragbox start
 ragbox --config ./ragbox.config.json index
 ```
 
@@ -161,6 +173,7 @@ ragbox query "部署步骤是什么？"
 ragbox query --source api "怎么配置认证？"
 ragbox query --source docs,api "认证链路整体是怎样的？"
 ragbox query --all-sources "部署步骤是什么？"
+ragbox start --all-sources
 ```
 
 配置了多个 source 时，`ragbox query "..."` 默认查询全部 source。`--all-sources` 是同样行为的显式写法；要缩小范围时再用 `--source`。
@@ -338,6 +351,25 @@ indexes/
 
 致命 query 错误会带上失败阶段，例如 `Query failed during select-documents: ...`。
 
+### `ragbox start [folder]`
+
+运行完整本地服务流程：先生成初始索引，再持续 watch 文档变化，同时启动 HTTP query API。
+
+```bash
+ragbox start
+ragbox start --auth-token dev-token
+ragbox start --host 127.0.0.1 --port 8787 --jsonl
+ragbox start --source docs
+ragbox start --all-sources
+ragbox start ./docs --output-dir ./.ragbox-index
+```
+
+当你已经通过 `ragbox init` 配好项目，并希望用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`。它会等初始索引完成后再启动 HTTP `serve`，之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
+
+配置了多个 source 时，`ragbox start` 默认启动全部 source。可以用 `--source docs,api` 限定范围，也可以用 `--all-sources` 显式表达全局启动。
+
+`start` 不会创建或修改 `ragbox.config.json`；第一次使用仍然先运行 `ragbox init`，再编辑配置文件。
+
 ### `ragbox serve [target]`
 
 启动一个前台 HTTP 服务，供外部系统通过 REST API 查询文档。使用前先通过 `ragbox index` 生成索引，或者用 `ragbox watch` 持续刷新索引。
@@ -456,8 +488,9 @@ ragbox query ./.ragbox-index "..."
 
 ## 生产使用建议
 
-常见方式有两种：
+常见方式：
 
+- 一个前台进程要同时负责索引、watch 和 serve 时，直接运行 `ragbox start`
 - 部署时执行 `ragbox index`，再通过 `ragbox serve` 或 SDK 查询完成后的索引目录
 - 文档会独立变化时，把 `ragbox watch` 作为后台服务运行
 

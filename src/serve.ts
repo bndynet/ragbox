@@ -33,6 +33,7 @@ export type ServeHandle = {
   host: string;
   port: number;
   server: http.Server;
+  reload: () => Promise<ServeIndexesResult>;
   close: () => Promise<void>;
 };
 
@@ -514,6 +515,7 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
     host: resolvedHost,
     port: resolvedPort,
     server,
+    reload,
     close: async () => {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {

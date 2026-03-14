@@ -1331,6 +1331,21 @@ test("serve CLI help lists HTTP options", () => {
   assert.match(result.stdout, /--all-sources/);
 });
 
+test("start CLI help lists watch and serve options", () => {
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+  const result = spawnSync(process.execPath, [cliPath, "start", "--help"], {
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stdout, /--host/);
+  assert.match(result.stdout, /--port/);
+  assert.match(result.stdout, /--auth-token/);
+  assert.match(result.stdout, /--jsonl/);
+  assert.match(result.stdout, /--staging/);
+  assert.match(result.stdout, /--all-sources/);
+});
+
 test("custom output dir resolves manifest and document index paths", () => {
   const rootDir = path.join(os.tmpdir(), "ragbox-test", "docs");
   const outputDir = path.join(os.tmpdir(), "ragbox-test", ".ragbox-index");
