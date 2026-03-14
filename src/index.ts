@@ -5,6 +5,9 @@ export {
   validateIndex,
   watchIndex
 } from "./sdk";
+export {
+  startServe
+} from "./serve";
 
 export type {
   RagboxConfig,
@@ -29,5 +32,13 @@ export type {
   WatchIndexOptions,
   WatchIndexReadyResult
 } from "./sdk";
+
+export type {
+  ServeHandle,
+  ServeHealthResult,
+  ServeIndexesResult,
+  ServeIndexSummary,
+  ServeOptions
+} from "./serve";
 
 export * as advanced from "./advanced";

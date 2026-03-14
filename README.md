@@ -157,6 +157,9 @@ Resolution order is command-line flags, then `ragbox.config.json`, then environm
 | API base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | required for query and usually PageIndex |
 | Model | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
+| Serve host | `RAGBOX_SERVE_HOST` | `--host` | `serve` | `127.0.0.1` |
+| Serve port | `RAGBOX_SERVE_PORT` | `--port` | `serve` | `8787` |
+| Serve token | `RAGBOX_SERVE_TOKEN` | `--auth-token` | `serve` | none |
 | Watch debounce | `RAGBOX_WATCH_DEBOUNCE_MS` | `--debounce-ms` | `watch` | `500` |
 | Watch retry attempts | `RAGBOX_WATCH_RETRY_ATTEMPTS` | `--retry-attempts` | `watch` | `0` |
 | Watch retry delay | `RAGBOX_WATCH_RETRY_DELAY_MS` | `--retry-delay-ms` | `watch` | `1000` |
@@ -298,6 +301,64 @@ Single-source `QueryResult` fields:
 
 Fatal query errors include the stage that failed, for example `Query failed during select-documents: ...`.
 
+### `ragbox serve [target]`
+
+Starts a foreground HTTP server for external systems. Index first with `ragbox index`, or keep the index fresh with `ragbox watch`.
+
+```bash
+ragbox serve ./.ragbox-index \
+  --host 127.0.0.1 \
+  --port 8787 \
+  --auth-token dev-token
+```
+
+For multiple configured sources, serve the config instead of a single target:
+
+```bash
+ragbox serve --config ./ragbox.config.json --host 0.0.0.0 --port 8787
+```
+
+Public HTTP contract:
+
+- `GET /health`: public readiness endpoint for load balancers, Kubernetes, systemd, and smoke checks. Returns 200 when all known indexes are query-ready, otherwise 503.
+- `GET /indexes`: returns the current validated index snapshot. Requires `Authorization: Bearer <token>` when a token is configured.
+- `POST /query`: answers from one target, selected sources, or all configured sources. Requires auth when configured.
+- `POST /reload`: re-reads config/source targets and refreshes the server-side validation snapshot. Requires auth when configured.
+
+Single-index requests:
+
+```bash
+curl http://127.0.0.1:8787/health
+
+curl -H "Authorization: Bearer dev-token" \
+  http://127.0.0.1:8787/indexes
+
+curl -X POST http://127.0.0.1:8787/query \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"How do I configure authentication?","trace":true}'
+```
+
+Multi-source requests:
+
+```bash
+curl -X POST http://localhost:8787/query \
+  -H "Content-Type: application/json" \
+  -d '{"source":"api","question":"How does OAuth work?"}'
+
+curl -X POST http://localhost:8787/query \
+  -H "Content-Type: application/json" \
+  -d '{"source":["docs","api"],"question":"How does authentication work end to end?"}'
+
+curl -X POST http://localhost:8787/query \
+  -H "Content-Type: application/json" \
+  -d '{"allSources":true,"question":"What are the deployment steps?"}'
+
+curl -X POST http://localhost:8787/reload
+```
+
+`serve` is designed for local services, internal services, container sidecars, and docs backends. Do not expose `.ragbox-index` as static files, because it can contain source document text. Browser widgets should call your own backend first; the backend can enforce user auth, rate limits, and audit logging before forwarding requests to `ragbox serve`. In production, bind to localhost or an internal network address and configure `--auth-token` or `RAGBOX_SERVE_TOKEN`.
+
 ### `ragbox watch <folder>`
 
 Runs an initial index and keeps it updated.
@@ -360,12 +421,13 @@ The output directory can contain source document text. Do not serve it publicly 
 
 Common patterns:
 
-- Index during deploy, then serve/query the completed output directory.
+- Index during deploy, then serve/query the completed output directory with `ragbox serve` or SDK calls.
 - Run `ragbox watch` as a background service if docs change outside deploys.
 - For long-running watch, prefer `--jsonl`, `--lock-file`, `--health-file`, `--retry-attempts`, and `--staging`.
 - Store the output directory outside the source tree, for example `/var/lib/ragbox/docs-index`.
 - Mount or copy the completed output directory to every app replica that needs querying.
 - Keep API keys in environment variables or your secret manager.
+- Use `RAGBOX_SERVE_TOKEN` or `--auth-token` when `serve` is reachable beyond localhost.
 - Start with `--concurrency 1`; raise it only after checking PageIndex and API rate limits.
 
 Example deploy-time indexing:
@@ -386,6 +448,7 @@ const {
   createIndex,
   inspectIndex,
   queryIndex,
+  startServe,
   validateIndex,
   watchIndex
 } = require("@bndynet/ragbox");
@@ -406,6 +469,14 @@ console.log(result.sources);
 
 const validation = await validateIndex("/var/lib/ragbox/docs-index");
 console.log(validation.ok);
+
+const server = await startServe({
+  target: "/var/lib/ragbox/docs-index",
+  port: 8787,
+  authToken: process.env.RAGBOX_SERVE_TOKEN
+});
+console.log(server.url);
+await server.close();
 
 const inspect = await inspectIndex("/var/lib/ragbox/docs-index");
 console.log(inspect.counts);

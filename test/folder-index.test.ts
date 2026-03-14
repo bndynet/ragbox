@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -58,6 +59,46 @@ async function pathExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function requestJson(url: string, options: {
+  body?: unknown;
+  headers?: Record<string, string>;
+  method?: string;
+} = {}): Promise<{ status: number; body: unknown }> {
+  const requestUrl = new URL(url);
+  const body = options.body === undefined ? undefined : JSON.stringify(options.body);
+
+  return await new Promise((resolve, reject) => {
+    const request = http.request(
+      requestUrl,
+      {
+        method: options.method ?? "GET",
+        headers: {
+          ...(body ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) } : {}),
+          ...options.headers
+        }
+      },
+      (response) => {
+        let raw = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          raw += chunk;
+        });
+        response.on("end", () => {
+          resolve({
+            status: response.statusCode ?? 0,
+            body: raw ? JSON.parse(raw) as unknown : undefined
+          });
+        });
+      }
+    );
+    request.on("error", reject);
+    if (body) {
+      request.write(body);
+    }
+    request.end();
+  });
 }
 
 async function writeValidIndexFixture(baseDir: string, outputInsideDocs = false): Promise<{
@@ -176,8 +217,9 @@ test("chatCompletionsUrl accepts either a base URL or a full chat completions en
 test("SDK root exports only product API plus advanced namespace", () => {
   const runtimeExports = Object.keys(ragbox).filter((key) => key !== "__esModule").sort();
 
-  assert.deepEqual(runtimeExports, ["advanced", "createIndex", "inspectIndex", "queryIndex", "validateIndex", "watchIndex"]);
+  assert.deepEqual(runtimeExports, ["advanced", "createIndex", "inspectIndex", "queryIndex", "startServe", "validateIndex", "watchIndex"]);
   assert.equal(typeof ragbox.createIndex, "function");
+  assert.equal(typeof ragbox.startServe, "function");
   assert.equal(typeof ragbox.advanced.indexFolder, "function");
   assert.equal(typeof ragbox.advanced.queryFolder, "function");
 });
@@ -992,6 +1034,198 @@ test("trace query CLI reports the query failure stage", async () => {
 
   assert.equal(result.status, 1, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
   assert.match(result.stderr, /Query failed during resolve/);
+});
+
+test("serve exposes health, indexes, and optional bearer auth", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const handle = await ragbox.startServe({
+    authToken: "secret-token",
+    port: 0,
+    target: fixture.outputDir
+  });
+
+  try {
+    const health = await requestJson(`${handle.url}/health`);
+    assert.equal(health.status, 200);
+    assert.equal((health.body as { ok: boolean }).ok, true);
+
+    const unauthorized = await requestJson(`${handle.url}/indexes`);
+    assert.equal(unauthorized.status, 401);
+
+    const indexes = await requestJson(`${handle.url}/indexes`, {
+      headers: {
+        Authorization: "Bearer secret-token"
+      }
+    });
+    assert.equal(indexes.status, 200);
+    assert.equal((indexes.body as { indexes: Array<{ ok: boolean; counts?: { ready: number } }> }).indexes[0]?.ok, true);
+    assert.equal((indexes.body as { indexes: Array<{ ok: boolean; counts?: { ready: number } }> }).indexes[0]?.counts?.ready, 1);
+  } finally {
+    await handle.close();
+  }
+});
+
+test("serve query endpoint returns QueryResult and supports trace", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const responses = [
+    JSON.stringify({ documents: [fixture.docId] }),
+    JSON.stringify({ nodes: ["n1"] }),
+    "Auth answer. Source: auth.md#n1"
+  ];
+  const originalFetch = globalThis.fetch;
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: responses.shift()
+            }
+          }
+        ]
+      })
+    } as Response;
+  }) as typeof fetch;
+
+  const handle = await ragbox.startServe({
+    apiKey: "test-key",
+    baseUrl: "https://example.test/v1",
+    model: "test-model",
+    port: 0,
+    target: fixture.outputDir
+  });
+
+  try {
+    const response = await requestJson(`${handle.url}/query`, {
+      method: "POST",
+      body: {
+        question: "How does auth work?",
+        trace: true
+      }
+    });
+
+    assert.equal(response.status, 200);
+    const body = response.body as {
+      answer: string;
+      model: string;
+      sources: Array<{ reference: string }>;
+      trace?: { version: number };
+    };
+    assert.equal(body.model, "test-model");
+    assert.match(body.answer, /Auth answer/);
+    assert.deepEqual(body.sources.map((source) => source.reference), ["auth.md#n1"]);
+    assert.equal(body.trace?.version, 1);
+  } finally {
+    await handle.close();
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
+test("serve query endpoint supports multi-source config and reload", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsFixture = await writeValidIndexFixture(path.join(tempDir, "docs-fixture"));
+  const apiFixture = await writeValidIndexFixture(path.join(tempDir, "api-fixture"));
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const responses = [
+    JSON.stringify({ documents: [docsFixture.docId] }),
+    JSON.stringify({ nodes: ["n1"] }),
+    "Docs answer",
+    JSON.stringify({ documents: [apiFixture.docId] }),
+    JSON.stringify({ nodes: ["n1"] }),
+    "API answer",
+    "Fused answer"
+  ];
+  const originalFetch = globalThis.fetch;
+
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        llm: {
+          apiKey: "config-key",
+          baseUrl: "https://example.test/v1",
+          model: "test-model"
+        },
+        sources: {
+          docs: {
+            rootDir: docsFixture.rootDir,
+            outputDir: docsFixture.outputDir
+          },
+          api: {
+            rootDir: apiFixture.rootDir,
+            outputDir: apiFixture.outputDir
+          }
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: responses.shift()
+            }
+          }
+        ]
+      })
+    } as Response;
+  }) as typeof fetch;
+
+  const handle = await ragbox.startServe({
+    allSources: true,
+    configPath,
+    port: 0
+  });
+
+  try {
+    const query = await requestJson(`${handle.url}/query`, {
+      method: "POST",
+      body: {
+        allSources: true,
+        question: "How do I deploy?"
+      }
+    });
+    assert.equal(query.status, 200);
+    assert.equal((query.body as { target: string; answer: string }).target, "multiple");
+    assert.equal((query.body as { answer: string }).answer, "Fused answer");
+
+    const reload = await requestJson(`${handle.url}/reload`, {
+      method: "POST"
+    });
+    assert.equal(reload.status, 200);
+    assert.deepEqual(
+      (reload.body as { indexes: Array<{ source?: string }> }).indexes.map((index) => index.source),
+      ["docs", "api"]
+    );
+  } finally {
+    await handle.close();
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
+test("serve CLI help lists HTTP options", () => {
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+  const result = spawnSync(process.execPath, [cliPath, "serve", "--help"], {
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stdout, /--host/);
+  assert.match(result.stdout, /--port/);
+  assert.match(result.stdout, /--auth-token/);
+  assert.match(result.stdout, /--all-sources/);
 });
 
 test("custom output dir resolves manifest and document index paths", () => {

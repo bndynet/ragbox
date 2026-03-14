@@ -9,6 +9,7 @@ import { queryMultipleIndexes, MultiQueryTarget } from "./folder-index/multi-que
 import { queryFolder } from "./folder-index/query";
 import { watchFolder } from "./folder-index/watch";
 import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions } from "./folder-index/types";
+import { startServe } from "./serve";
 import { inspectIndex, validateIndex, InspectIndexResult, ValidateIndexResult } from "./sdk";
 
 function parseConcurrency(value: string): number {
@@ -37,6 +38,14 @@ function parseRetryDelayMs(value: string): number {
 
 function parseDebounceMs(value: string): number {
   return parseNonNegativeInteger(value, "--debounce-ms");
+}
+
+function parseServePort(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 65535) {
+    throw new Error("--port must be an integer between 0 and 65535");
+  }
+  return parsed;
 }
 
 function isVerbose(): boolean {
@@ -107,6 +116,13 @@ type QueryCommandOptions = SharedCommandOptions & {
 
 type DiagnosticCommandOptions = SharedCommandOptions & {
   allSources?: boolean;
+};
+
+type ServeCommandOptions = SharedCommandOptions & {
+  allSources?: boolean;
+  authToken?: string;
+  host?: string;
+  port?: number;
 };
 
 type InitCommandOptions = {
@@ -807,6 +823,52 @@ async function main(): Promise<void> {
   )
     .action(async (target: string | undefined, question: string | undefined, commandOptions: QueryCommandOptions, command: Command) => {
       await runQueryAction(target, question, { ...commandOptions, trace: true, json: true }, command);
+    });
+
+  addProjectOptions(
+    addLlmOptions(
+      program
+        .command("serve")
+        .argument("[target]", "docs folder or ragbox output directory")
+        .option("--all-sources", "serve every configured source by default")
+        .option("--auth-token <token>", "bearer token required for non-health endpoints")
+        .option("--host <host>", "host to bind", process.env.RAGBOX_SERVE_HOST ?? "127.0.0.1")
+        .option("--port <number>", "port to bind", parseServePort)
+    )
+  )
+    .action(async (target: string | undefined, commandOptions: ServeCommandOptions, command: Command) => {
+      const globalOptions = getGlobalOptions(command);
+      const handle = await startServe({
+        allSources: commandOptions.allSources,
+        apiKey: commandOptions.apiKey,
+        authToken: commandOptions.authToken,
+        baseUrl: commandOptions.baseUrl,
+        configPath: globalOptions.config,
+        host: commandOptions.host,
+        model: commandOptions.model,
+        port: commandOptions.port,
+        source: commandOptions.source,
+        target
+      });
+      console.log(`Serving ragbox at ${handle.url}`);
+
+      await new Promise<void>((resolve) => {
+        let closing = false;
+        const stop = (): void => {
+          if (closing) {
+            return;
+          }
+          closing = true;
+          void handle.close().finally(resolve);
+        };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+        handle.server.once("close", () => {
+          process.off("SIGINT", stop);
+          process.off("SIGTERM", stop);
+          resolve();
+        });
+      });
     });
 
   addProjectOptions(

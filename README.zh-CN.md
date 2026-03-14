@@ -155,6 +155,9 @@ ragbox --config ./ragbox.config.prod.json query "怎么部署？"
 | API Base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API Key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | query 必填，PageIndex 通常也需要 |
 | 模型 | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
+| Serve host | `RAGBOX_SERVE_HOST` | `--host` | `serve` | `127.0.0.1` |
+| Serve port | `RAGBOX_SERVE_PORT` | `--port` | `serve` | `8787` |
+| Serve token | `RAGBOX_SERVE_TOKEN` | `--auth-token` | `serve` | 无 |
 | Watch debounce | `RAGBOX_WATCH_DEBOUNCE_MS` | `--debounce-ms` | `watch` | `500` |
 | Watch 重试次数 | `RAGBOX_WATCH_RETRY_ATTEMPTS` | `--retry-attempts` | `watch` | `0` |
 | Watch 重试延迟 | `RAGBOX_WATCH_RETRY_DELAY_MS` | `--retry-delay-ms` | `watch` | `1000` |
@@ -303,6 +306,64 @@ indexes/
 
 致命 query 错误会带上失败阶段，例如 `Query failed during select-documents: ...`。
 
+### `ragbox serve [target]`
+
+启动一个前台 HTTP 服务，供外部系统通过 REST API 查询文档。使用前先通过 `ragbox index` 生成索引，或者用 `ragbox watch` 持续刷新索引。
+
+```bash
+ragbox serve ./.ragbox-index \
+  --host 127.0.0.1 \
+  --port 8787 \
+  --auth-token dev-token
+```
+
+多 source 项目可以直接基于配置文件启动：
+
+```bash
+ragbox serve --config ./ragbox.config.json --host 0.0.0.0 --port 8787
+```
+
+Public HTTP contract：
+
+- `GET /health`：公开 readiness endpoint，适合 load balancer、Kubernetes、systemd 和 smoke check。所有已知索引都可 query 时返回 200，否则返回 503。
+- `GET /indexes`：返回当前服务端缓存的索引校验快照。配置 token 后需要 `Authorization: Bearer <token>`。
+- `POST /query`：基于单个 target、选定 source 或全部 source 回答问题。配置 token 后需要鉴权。
+- `POST /reload`：重新读取 config/source target，并刷新服务端索引校验快照。配置 token 后需要鉴权。
+
+单索引请求：
+
+```bash
+curl http://127.0.0.1:8787/health
+
+curl -H "Authorization: Bearer dev-token" \
+  http://127.0.0.1:8787/indexes
+
+curl -X POST http://127.0.0.1:8787/query \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"怎么配置认证？","trace":true}'
+```
+
+多 source 请求：
+
+```bash
+curl -X POST http://localhost:8787/query \
+  -H "Content-Type: application/json" \
+  -d '{"source":"api","question":"OAuth 是怎么工作的？"}'
+
+curl -X POST http://localhost:8787/query \
+  -H "Content-Type: application/json" \
+  -d '{"source":["docs","api"],"question":"认证链路整体是怎样的？"}'
+
+curl -X POST http://localhost:8787/query \
+  -H "Content-Type: application/json" \
+  -d '{"allSources":true,"question":"部署步骤是什么？"}'
+
+curl -X POST http://localhost:8787/reload
+```
+
+`serve` 首版面向本地服务、内网服务、container sidecar 和 docs backend。不要把 `.ragbox-index` 作为静态目录直接暴露，因为里面可能包含源文档正文。浏览器 widget 不应该直接携带 ragbox token；建议先请求自己的 backend，由 backend 负责用户登录、限流和审计，再转发给 `ragbox serve`。生产环境建议绑定 localhost 或内网地址，并配置 `--auth-token` 或 `RAGBOX_SERVE_TOKEN`。
+
 ### `ragbox watch <folder>`
 
 先执行一次索引，然后监听文档变化并增量更新。
@@ -365,7 +426,7 @@ ragbox query ./.ragbox-index "..."
 
 常见方式有两种：
 
-- 部署时执行 `ragbox index`，应用只读取完成后的索引目录
+- 部署时执行 `ragbox index`，再通过 `ragbox serve` 或 SDK 查询完成后的索引目录
 - 文档会独立变化时，把 `ragbox watch` 作为后台服务运行
 
 建议：
@@ -374,6 +435,7 @@ ragbox query ./.ragbox-index "..."
 - 把输出目录放在源码目录外，例如 `/var/lib/ragbox/docs-index`
 - 多副本应用需要读取同一份完整索引，可以挂载只读卷或随部署产物分发
 - API key 放环境变量或 secret manager
+- 当 `serve` 不只绑定 localhost 时，使用 `RAGBOX_SERVE_TOKEN` 或 `--auth-token`
 - 先用 `--concurrency 1`，确认 PageIndex 和模型服务限流后再提高
 - 如果要求零停机更新，可以先索引到 staging 目录，成功后再切换读目录
 
@@ -395,6 +457,7 @@ const {
   createIndex,
   inspectIndex,
   queryIndex,
+  startServe,
   validateIndex,
   watchIndex
 } = require("@bndynet/ragbox");
@@ -415,6 +478,14 @@ console.log(result.sources);
 
 const validation = await validateIndex("/var/lib/ragbox/docs-index");
 console.log(validation.ok);
+
+const server = await startServe({
+  target: "/var/lib/ragbox/docs-index",
+  port: 8787,
+  authToken: process.env.RAGBOX_SERVE_TOKEN
+});
+console.log(server.url);
+await server.close();
 
 const inspect = await inspectIndex("/var/lib/ragbox/docs-index");
 console.log(inspect.counts);
