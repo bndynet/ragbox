@@ -142,19 +142,15 @@ ragbox --config ./ragbox.config.json index
     "model": "gpt-4o-mini"
   },
   "sources": {
-    "docs": {
-      "rootDir": "./docs",
-      "outputDir": "./.ragbox-index/docs"
+    "ragbox": {
+      "rootDir": "./ragbox",
+      "outputDir": "./.ragbox-index/ragbox",
+      "include": ["**/*.md", "**/*.mdx"]
     },
-    "api": {
-      "rootDir": "./packages/api/docs",
-      "outputDir": "./.ragbox-index/api"
-    },
-    "web": {
-      "rootDir": "./apps/web/content",
-      "outputDir": "./.ragbox-index/web",
-      "include": ["**/*.md", "**/*.mdx"],
-      "exclude": ["**/draft/**"]
+    "icharts": {
+      "rootDir": "./icharts",
+      "outputDir": "./.ragbox-index/icharts",
+      "include": ["**/*.md", "**/*.mdx"]
     }
   }
 }
@@ -165,14 +161,13 @@ ragbox --config ./ragbox.config.json index
 命名 source 分别索引，query 时可以全局查，也可以限定 source：
 
 ```bash
-ragbox index --source docs
-ragbox index --source api
-ragbox index --source web
+ragbox index --source ragbox
+ragbox index --source icharts
 
-ragbox query "部署步骤是什么？"
-ragbox query --source api "怎么配置认证？"
-ragbox query --source docs,api "认证链路整体是怎样的？"
-ragbox query --all-sources "部署步骤是什么？"
+ragbox query "ragbox start 是做什么的？"
+ragbox query --source ragbox "query trace 是怎么工作的？"
+ragbox query --source ragbox,icharts "这些项目如何处理运行时流程？"
+ragbox query --all-sources "当前示例有哪些文档主题？"
 ragbox start --all-sources
 ```
 
@@ -241,7 +236,9 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 
 它会扫描 `**/*.md` 和 `**/*.mdx`，计算文件 hash，只重新索引新增、修改、之前失败的文件，并跳过未变化的 ready 文件。
 
-使用 `--json` 可以输出带版本号的机器可读结果，包含输出路径和统计信息：
+如果有文档索引失败，普通输出会继续把统计信息写到 stdout，并把失败文档路径和 PageIndex 错误写到 stderr。
+
+使用 `--json` 可以输出带版本号的机器可读结果，包含输出路径、统计信息和失败文档明细：
 
 ```json
 {
@@ -261,7 +258,8 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
     "retryFailed": 0,
     "unchanged": 0,
     "deleted": 0
-  }
+  },
+  "failures": []
 }
 ```
 
@@ -271,7 +269,7 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 
 ```bash
 ragbox inspect ./.ragbox-index
-ragbox inspect --source api
+ragbox inspect --source ragbox
 ragbox inspect --all-sources --json
 ```
 
@@ -291,7 +289,7 @@ ragbox status --json
 
 ```bash
 ragbox doctor
-ragbox doctor --source docs --json
+ragbox doctor --source ragbox --json
 ragbox doctor --all-sources
 ```
 
@@ -308,7 +306,7 @@ ragbox query ./.ragbox-index "怎么配置认证？" --json
 ragbox query ./.ragbox-index "怎么配置认证？" --trace
 ragbox trace query ./.ragbox-index "怎么配置认证？"
 ragbox query "部署步骤是什么？"
-ragbox query --source docs,api "认证链路整体是怎样的？"
+ragbox query --source ragbox,icharts "这些项目如何处理运行时流程？"
 ragbox query --all-sources "部署步骤是什么？"
 ```
 
@@ -334,7 +332,7 @@ indexes/
 5. 回到完整 JSON 中取出选中节点的 `text`
 6. 把这些文本拼成上下文，让 LLM 生成最终答案
 
-对多个配置 source，`ragbox query "..."` 默认查询全部 source。可以用 `--source` 传逗号分隔的名字来缩小范围，也可以用 `--all-sources` 显式表达全局查询。多源 query 会对每个 source 执行正常的结构化查询流程，然后让 LLM 基于各 source 选出的片段融合成一个最终回答。来源引用会加上 source 前缀，例如 `api:auth.md#n1`。
+对多个配置 source，`ragbox query "..."` 默认查询全部 source。可以用 `--source` 传逗号分隔的名字来缩小范围，也可以用 `--all-sources` 显式表达全局查询。多源 query 会对每个 source 执行正常的结构化查询流程，然后让 LLM 基于各 source 选出的片段融合成一个最终回答。来源引用会加上 source 前缀，例如 `ragbox:start-command.md#n1`。
 
 使用 `--json` 可以输出带版本号的结果契约。单 source query 返回 `QueryResult`；多 source query 返回融合后的 `answer`、每个 source 的 `results`、带 source 前缀的 `sources`、`warnings` 和 `timingsMs`。
 
@@ -359,14 +357,14 @@ indexes/
 ragbox start
 ragbox start --auth-token dev-token
 ragbox start --host 127.0.0.1 --port 8787 --jsonl
-ragbox start --source docs
+ragbox start --source ragbox
 ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
 
 当你已经通过 `ragbox init` 配好项目，并希望用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`。它会等初始索引完成后再启动 HTTP `serve`，之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
 
-配置了多个 source 时，`ragbox start` 默认启动全部 source。可以用 `--source docs,api` 限定范围，也可以用 `--all-sources` 显式表达全局启动。
+配置了多个 source 时，`ragbox start` 默认启动全部 source。可以用 `--source ragbox,icharts` 限定范围，也可以用 `--all-sources` 显式表达全局启动。
 
 `start` 不会创建或修改 `ragbox.config.json`；第一次使用仍然先运行 `ragbox init`，再编辑配置文件。
 
@@ -389,6 +387,7 @@ ragbox serve --config ./ragbox.config.json --host 0.0.0.0 --port 8787
 
 Public HTTP contract：
 
+- `GET /`：公开服务入口，返回 health 摘要和 endpoint 列表。
 - `GET /health`：公开 readiness endpoint，适合 load balancer、Kubernetes、systemd 和 smoke check。所有已知索引都可 query 时返回 200，否则返回 503。
 - `GET /indexes`：返回当前服务端缓存的索引校验快照。配置 token 后需要 `Authorization: Bearer <token>`。
 - `POST /query`：基于单个 target、选定 source 或全部 source 回答问题。配置 token 后需要鉴权。
@@ -397,6 +396,7 @@ Public HTTP contract：
 单索引请求：
 
 ```bash
+curl http://127.0.0.1:8787/
 curl http://127.0.0.1:8787/health
 
 curl -H "Authorization: Bearer dev-token" \
@@ -413,15 +413,15 @@ curl -X POST http://127.0.0.1:8787/query \
 ```bash
 curl -X POST http://localhost:8787/query \
   -H "Content-Type: application/json" \
-  -d '{"source":"api","question":"OAuth 是怎么工作的？"}'
+  -d '{"source":"ragbox","question":"ragbox start 是做什么的？"}'
 
 curl -X POST http://localhost:8787/query \
   -H "Content-Type: application/json" \
-  -d '{"source":["docs","api"],"question":"认证链路整体是怎样的？"}'
+  -d '{"source":["ragbox","icharts"],"question":"这些项目如何处理运行时流程？"}'
 
 curl -X POST http://localhost:8787/query \
   -H "Content-Type: application/json" \
-  -d '{"allSources":true,"question":"部署步骤是什么？"}'
+  -d '{"allSources":true,"question":"当前示例有哪些文档主题？"}'
 
 curl -X POST http://localhost:8787/reload
 ```
@@ -636,7 +636,7 @@ const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-
 - `PAGEINDEX_CLI is required to run PageIndex`：设置 `PAGEINDEX_CLI=/path/to/run_pageindex.py`
 - `OPENAI_API_KEY is required for query`：设置 `OPENAI_API_KEY` 或传 `--api-key`
 - `Expected a docs folder... or a ragbox output directory`：`query` 的第一个参数可以传带 `.pageindex/` 的 docs 目录，也可以直接传索引输出目录
-- `PageIndex completed but no generated JSON result was found`：如果你的 PageIndex CLI 不使用默认的 `--output` 参数名，把 `PAGEINDEX_OUTPUT_ARG` 设置成它支持的输出路径参数名。
+- `PageIndex completed but no generated JSON result was found`：默认情况下，ragbox 会读取 PageIndex 写到 `results/` 里的 JSON。如果你使用的自定义 wrapper 只支持显式输出路径，把 `PAGEINDEX_OUTPUT_ARG` 或 `pageIndex.outputArg` 设置成它的输出路径参数名。
 
 ## 限制
 
@@ -670,9 +670,10 @@ export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.openai.com/v1
 export PAGEINDEX_MODEL=gpt-4o-mini
 export RAGBOX_E2E_QUERY_MODEL=gpt-4o-mini
-export RAGBOX_E2E_DOCS_DIR=./examples
-export RAGBOX_E2E_OUTPUT_DIR=./examples/.pageindex
-export RAGBOX_E2E_EXPECTED_TEXT=PKCE
+export RAGBOX_E2E_DOCS_DIR=./examples/ragbox
+export RAGBOX_E2E_OUTPUT_DIR=./examples/ragbox/.pageindex
+export RAGBOX_E2E_EXPECTED_TEXT=start
+export RAGBOX_E2E_QUESTION="What does ragbox start do, and when should I use it?"
 export RAGBOX_VERBOSE=1
 
 # 可选
@@ -685,6 +686,6 @@ npm run test:e2e
 
 `.env.e2e.local` 已被 git ignore。只有在你明确想绕过脚本时，才使用 `npm run test:e2e:raw`。
 
-这个测试默认使用 `./examples`，执行 `ragbox index ./examples --output-dir ./examples/.pageindex`，查询生成的 JSON 索引目录，然后再查询 docs 目录本身。运行时会打印实时阶段日志、逐文档索引进度、query 进度，以及长时间命令的心跳日志。`./examples` 现在包含一个小型 multi-source fixture，里面有 `docs`、`api` 和 `web` 目录；如果你想先快速验证 OAuth 文档，可以设置 `RAGBOX_E2E_DOCS_DIR=./examples/packages/api/docs/authentication`。
+这个测试默认使用 `./examples/ragbox`，执行 `ragbox index ./examples/ragbox --output-dir ./examples/ragbox/.pageindex`，查询生成的 JSON 索引目录，然后再查询 docs 目录本身。运行时会打印实时阶段日志、逐文档索引进度、query 进度，以及长时间命令的心跳日志。`./examples` 现在包含 `ragbox` 和 `icharts` 两个 source。
 
-默认 e2e 问题是一个英文模糊问题：“What problem does PKCE solve in OAuth 2.0, and how does it reduce authorization code interception risk?”。e2e 日志会分别打印从索引目录 query 和从 docs 目录 query 得到的最终答案。
+默认 e2e 问题是：“What does ragbox start do, and when should I use it?”。e2e 日志会分别打印从索引目录 query 和从 docs 目录 query 得到的最终答案。

@@ -327,7 +327,7 @@ export type QuerySelectedNode = {
   found: boolean;
   hasText: boolean;
   reference?: string;
-  selectionReason: "selected_by_node_planner";
+  selectionReason: "selected_by_node_planner" | "matched_query_text";
   skipReason?: "node_not_found" | "missing_text";
   textBytes?: number;
 };

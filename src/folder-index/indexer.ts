@@ -31,6 +31,27 @@ function reportProgress(options: PageIndexOptions, event: IndexProgressEvent): v
   }
 }
 
+async function findStaleIndexFiles(rootDir: string, files: ScannedFile[], outputDir?: string): Promise<ScannedFile[]> {
+  const staleFiles: ScannedFile[] = [];
+
+  for (const file of files) {
+    try {
+      const stat = await fs.stat(resolveDocumentIndexPath(rootDir, file.indexPath, outputDir));
+      if (stat.mtimeMs < file.mtimeMs - 1) {
+        staleFiles.push(file);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        staleFiles.push(file);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return staleFiles;
+}
+
 export async function indexFolder(folder: string, options: PageIndexOptions = {}): Promise<IndexFolderResult> {
   const rootDir = path.resolve(folder);
   const config = loadPageIndexConfig(options);
@@ -45,6 +66,10 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
     include: config.include
   });
   const diff = diffManifest(previousManifest, scannedFiles);
+  const staleIndexFiles = await findStaleIndexFiles(rootDir, diff.unchanged, config.outputDir);
+  const staleIndexPaths = new Set(staleIndexFiles.map((file) => file.path));
+  const unchanged = diff.unchanged.filter((file) => !staleIndexPaths.has(file.path));
+  const toIndex = [...diff.toIndex, ...staleIndexFiles];
   const previousByPath = new Map(previousManifest.documents.map((record) => [record.path, record]));
 
   reportProgress(config, {
@@ -52,8 +77,8 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
     rootDir,
     outputDir,
     total: scannedFiles.length,
-    toIndex: diff.toIndex.length,
-    unchanged: diff.unchanged.length,
+    toIndex: toIndex.length,
+    unchanged: unchanged.length,
     deleted: diff.deleted.length
   });
 
@@ -61,12 +86,12 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
   await removeDeletedIndexFiles(rootDir, diff.deleted, config.outputDir);
 
   const indexedRecords = await runWithConcurrency<ScannedFile, DocumentRecord>(
-    diff.toIndex,
+    toIndex,
     config.concurrency,
     async (scannedFile, index) => {
       const absoluteOutputPath = resolveDocumentIndexPath(rootDir, scannedFile.indexPath, config.outputDir);
       const progressIndex = index + 1;
-      const progressTotal = diff.toIndex.length;
+      const progressTotal = toIndex.length;
 
       reportProgress(config, { type: "index-start", path: scannedFile.path, index: progressIndex, total: progressTotal });
 
@@ -145,9 +170,9 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
     manifestPath,
     rootTreePath,
     added: diff.added.length,
-    modified: diff.modified.length,
+    modified: diff.modified.length + staleIndexFiles.length,
     retryFailed: diff.retryFailed.length,
-    unchanged: diff.unchanged.length,
+    unchanged: unchanged.length,
     deleted: diff.deleted.length,
     failed: documents.filter((record) => record.status === "failed").length,
     ready: documents.filter((record) => record.status === "ready").length

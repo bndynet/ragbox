@@ -3,7 +3,7 @@ import { AddressInfo } from "node:net";
 import { URL } from "node:url";
 import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig } from "./config-file";
 import { queryMultipleIndexes, MultiQueryResult, MultiQueryTarget } from "./folder-index/multi-query";
-import { queryFolder } from "./folder-index/query";
+import { queryFolder, QueryStageError } from "./folder-index/query";
 import { LlmClient, PageIndexOptions, QueryResult } from "./folder-index/types";
 import { InspectIndexResult, validateIndex, ValidateIndexResult } from "./sdk";
 
@@ -63,6 +63,20 @@ export type ServeHealthResult = {
     ready: number;
     failed: number;
   };
+};
+
+export type ServeRootResult = {
+  version: 1;
+  name: "ragbox";
+  status: ServeHealthResult["status"];
+  ok: boolean;
+  health: ServeHealthResult;
+  endpoints: Array<{
+    method: "GET" | "POST";
+    path: "/" | "/health" | "/indexes" | "/query" | "/reload";
+    authRequired: boolean;
+    description: string;
+  }>;
 };
 
 type ServeResolvedTarget = {
@@ -257,6 +271,48 @@ function healthFromIndexes(startedAt: number, lastReloadAt: string, indexes: Ser
   };
 }
 
+function rootFromHealth(health: ServeHealthResult, authRequired: boolean): ServeRootResult {
+  return {
+    version: 1,
+    name: "ragbox",
+    status: health.status,
+    ok: health.ok,
+    health,
+    endpoints: [
+      {
+        method: "GET",
+        path: "/",
+        authRequired: false,
+        description: "Service entrypoint and endpoint list."
+      },
+      {
+        method: "GET",
+        path: "/health",
+        authRequired: false,
+        description: "Readiness and index health summary."
+      },
+      {
+        method: "GET",
+        path: "/indexes",
+        authRequired,
+        description: "Validated index snapshot."
+      },
+      {
+        method: "POST",
+        path: "/query",
+        authRequired,
+        description: "Ask questions about the configured knowledge sources."
+      },
+      {
+        method: "POST",
+        path: "/reload",
+        authRequired,
+        description: "Reload configured index snapshots."
+      }
+    ]
+  };
+}
+
 function writeJson(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8"
@@ -371,6 +427,17 @@ function statusForThrownError(error: unknown): { status: number; code: string; m
   }
 
   const message = error instanceof Error ? error.message : String(error);
+  if (
+    error instanceof QueryStageError &&
+    (error.stage === "select-documents" || error.stage === "select-nodes" || error.stage === "answer")
+  ) {
+    return {
+      status: 502,
+      code: "upstream_error",
+      message
+    };
+  }
+
   if (/LLM request failed|OPENAI_API_KEY|chat completions/i.test(message)) {
     return {
       status: 502,
@@ -430,6 +497,16 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
     void (async () => {
       const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? `${host}:${port}`}`);
       const route = requestUrl.pathname.replace(/\/+$/, "") || "/";
+
+      if (route === "/") {
+        if (request.method !== "GET") {
+          methodNotAllowed(response);
+          return;
+        }
+        const health = healthFromIndexes(startedAt, lastReloadAt, indexes);
+        writeJson(response, 200, rootFromHealth(health, Boolean(authToken)));
+        return;
+      }
 
       if (route === "/health") {
         if (request.method !== "GET") {

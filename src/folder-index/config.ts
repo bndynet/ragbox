@@ -45,7 +45,7 @@ export function loadPageIndexConfig(overrides: PageIndexOptions = {}): Required<
     exclude: overrides.exclude,
     include: overrides.include,
     outputDir: overrides.outputDir ?? env.RAGBOX_OUTPUT_DIR,
-    outputArg: overrides.outputArg ?? env.PAGEINDEX_OUTPUT_ARG ?? "--output",
+    outputArg: overrides.outputArg ?? env.PAGEINDEX_OUTPUT_ARG,
     extraArgs: overrides.extraArgs ?? parseExtraArgs(env.PAGEINDEX_EXTRA_ARGS),
     progress: overrides.progress,
     trace: overrides.trace,

@@ -144,6 +144,14 @@ type IndexJsonOutput = {
   rootTreePath: string;
   generatedAt: string;
   counts: IndexCounts;
+  failures: IndexFailureOutput[];
+};
+
+type IndexFailureOutput = {
+  path: string;
+  absolutePath: string;
+  indexPath: string;
+  error?: string;
 };
 
 type DiagnosticTarget = {
@@ -221,6 +229,13 @@ function writeJsonLine(value: unknown): void {
   console.log(JSON.stringify(value));
 }
 
+function indentMultiline(value: string, prefix: string): string {
+  return value
+    .split(/\r?\n/)
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
+}
+
 function indexCounts(result: IndexFolderResult): IndexCounts {
   return {
     total: result.manifest.documents.length,
@@ -234,6 +249,17 @@ function indexCounts(result: IndexFolderResult): IndexCounts {
   };
 }
 
+function indexFailures(result: IndexFolderResult): IndexFailureOutput[] {
+  return result.manifest.documents
+    .filter((document) => document.status === "failed")
+    .map((document) => ({
+      path: document.path,
+      absolutePath: document.absolutePath,
+      indexPath: document.indexPath,
+      error: document.error
+    }));
+}
+
 function indexJsonOutput(result: IndexFolderResult): IndexJsonOutput {
   return {
     version: 1,
@@ -243,8 +269,33 @@ function indexJsonOutput(result: IndexFolderResult): IndexJsonOutput {
     manifestPath: result.manifestPath,
     rootTreePath: result.rootTreePath,
     generatedAt: result.manifest.generatedAt,
-    counts: indexCounts(result)
+    counts: indexCounts(result),
+    failures: indexFailures(result)
   };
+}
+
+function printIndexResult(folder: string, result: IndexFolderResult): void {
+  console.log(`Indexed ${folder}`);
+  console.log(`ready=${result.ready}`);
+  console.log(`failed=${result.failed}`);
+  console.log(`added=${result.added}`);
+  console.log(`modified=${result.modified}`);
+  console.log(`retryFailed=${result.retryFailed}`);
+  console.log(`deleted=${result.deleted}`);
+  console.log(`unchanged=${result.unchanged}`);
+
+  const failures = indexFailures(result);
+  if (failures.length === 0) {
+    return;
+  }
+
+  console.error("Failed documents:");
+  for (const failure of failures) {
+    console.error(`- ${failure.path}`);
+    if (failure.error) {
+      console.error(indentMultiline(failure.error, "  "));
+    }
+  }
 }
 
 function logProgressAsJsonLine(event: IndexProgressEvent): void {
@@ -975,14 +1026,7 @@ async function main(): Promise<void> {
         writeJson(indexJsonOutput(result));
         return;
       }
-      console.log(`Indexed ${indexFolderPath}`);
-      console.log(`ready=${result.ready}`);
-      console.log(`failed=${result.failed}`);
-      console.log(`added=${result.added}`);
-      console.log(`modified=${result.modified}`);
-      console.log(`retryFailed=${result.retryFailed}`);
-      console.log(`deleted=${result.deleted}`);
-      console.log(`unchanged=${result.unchanged}`);
+      printIndexResult(indexFolderPath, result);
     });
 
   addProjectOptions(

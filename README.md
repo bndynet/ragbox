@@ -144,19 +144,15 @@ For multiple documentation directories, name each one under `sources`. This is u
     "model": "gpt-4o-mini"
   },
   "sources": {
-    "docs": {
-      "rootDir": "./docs",
-      "outputDir": "./.ragbox-index/docs"
+    "ragbox": {
+      "rootDir": "./ragbox",
+      "outputDir": "./.ragbox-index/ragbox",
+      "include": ["**/*.md", "**/*.mdx"]
     },
-    "api": {
-      "rootDir": "./packages/api/docs",
-      "outputDir": "./.ragbox-index/api"
-    },
-    "web": {
-      "rootDir": "./apps/web/content",
-      "outputDir": "./.ragbox-index/web",
-      "include": ["**/*.md", "**/*.mdx"],
-      "exclude": ["**/draft/**"]
+    "icharts": {
+      "rootDir": "./icharts",
+      "outputDir": "./.ragbox-index/icharts",
+      "include": ["**/*.md", "**/*.mdx"]
     }
   }
 }
@@ -167,14 +163,13 @@ A runnable copy of this multi-source layout lives in `./examples/ragbox.config.j
 Index named sources separately, then query globally or narrow to selected sources:
 
 ```bash
-ragbox index --source docs
-ragbox index --source api
-ragbox index --source web
+ragbox index --source ragbox
+ragbox index --source icharts
 
-ragbox query "What are the deployment steps?"
-ragbox query --source api "How do I configure authentication?"
-ragbox query --source docs,api "How does authentication work end to end?"
-ragbox query --all-sources "What are the deployment steps?"
+ragbox query "What does ragbox start do?"
+ragbox query --source ragbox "How does query tracing work?"
+ragbox query --source ragbox,icharts "How do these projects handle runtime workflows?"
+ragbox query --all-sources "What documentation topics are available?"
 ragbox start --all-sources
 ```
 
@@ -243,7 +238,9 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 
 `index` scans `**/*.md` and `**/*.mdx`, hashes files, re-indexes new/modified/failed files, skips unchanged ready files, and removes deleted files from the manifest.
 
-Use `--json` to print a versioned machine-readable result with output paths and counts:
+If any document fails, normal output keeps the counts on stdout and prints failed document paths plus PageIndex errors on stderr.
+
+Use `--json` to print a versioned machine-readable result with output paths, counts, and failed document details:
 
 ```json
 {
@@ -263,7 +260,8 @@ Use `--json` to print a versioned machine-readable result with output paths and 
     "retryFailed": 0,
     "unchanged": 0,
     "deleted": 0
-  }
+  },
+  "failures": []
 }
 ```
 
@@ -273,7 +271,7 @@ Shows what is inside an index, including document status and counts. Use it when
 
 ```bash
 ragbox inspect ./.ragbox-index
-ragbox inspect --source api
+ragbox inspect --source ragbox
 ragbox inspect --all-sources --json
 ```
 
@@ -293,7 +291,7 @@ Checks the local setup: config, PageIndex CLI path, LLM settings, API key presen
 
 ```bash
 ragbox doctor
-ragbox doctor --source docs --json
+ragbox doctor --source ragbox --json
 ragbox doctor --all-sources
 ```
 
@@ -310,7 +308,7 @@ ragbox query ./.ragbox-index "How do I configure authentication?" --json
 ragbox query ./.ragbox-index "How do I configure authentication?" --trace
 ragbox trace query ./.ragbox-index "How do I configure authentication?"
 ragbox query "What are the deployment steps?"
-ragbox query --source docs,api "How does authentication work end to end?"
+ragbox query --source ragbox,icharts "How do these projects handle runtime workflows?"
 ragbox query --all-sources "What are the deployment steps?"
 ```
 
@@ -329,7 +327,7 @@ indexes/
 
 `query` reads `root-tree.json`, asks the LLM to choose likely documents, reads their PageIndex JSON, strips `text` fields before node selection, then extracts the selected node text for the final answer.
 
-For multiple configured sources, `ragbox query "..."` queries all sources by default. Pass comma-separated names with `--source` to limit the search, or use `--all-sources` when you want the global behavior to be explicit. Multi-source query runs the normal structured query flow per source, then asks the LLM to synthesize one final answer from the selected source excerpts. Source references are prefixed with the source name, for example `api:auth.md#n1`.
+For multiple configured sources, `ragbox query "..."` queries all sources by default. Pass comma-separated names with `--source` to limit the search, or use `--all-sources` when you want the global behavior to be explicit. Multi-source query runs the normal structured query flow per source, then asks the LLM to synthesize one final answer from the selected source excerpts. Source references are prefixed with the source name, for example `ragbox:start-command.md#n1`.
 
 Use `--json` to print a versioned result contract. Single-source queries return `QueryResult`; multi-source queries return a result with a fused `answer`, per-source `results`, prefixed `sources`, `warnings`, and `timingsMs`.
 
@@ -354,14 +352,14 @@ Runs the complete local service loop: index first, watch for future changes, and
 ragbox start
 ragbox start --auth-token dev-token
 ragbox start --host 127.0.0.1 --port 8787 --jsonl
-ragbox start --source docs
+ragbox start --source ragbox
 ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
 
 Use `start` after `ragbox init` when you want one foreground process for local development, an internal service, or a container. It waits for the initial index run before starting HTTP `serve`, then reloads the serve index snapshot after successful watch updates.
 
-With multiple configured sources, `ragbox start` starts all sources by default. Use `--source docs,api` to limit the running sources, or `--all-sources` to make the global behavior explicit.
+With multiple configured sources, `ragbox start` starts all sources by default. Use `--source ragbox,icharts` to limit the running sources, or `--all-sources` to make the global behavior explicit.
 
 `start` does not create or edit `ragbox.config.json`; run `ragbox init` first, then edit the config before starting.
 
@@ -384,6 +382,7 @@ ragbox serve --config ./ragbox.config.json --host 0.0.0.0 --port 8787
 
 Public HTTP contract:
 
+- `GET /`: public service entrypoint with health summary and endpoint list.
 - `GET /health`: public readiness endpoint for load balancers, Kubernetes, systemd, and smoke checks. Returns 200 when all known indexes are query-ready, otherwise 503.
 - `GET /indexes`: returns the current validated index snapshot. Requires `Authorization: Bearer <token>` when a token is configured.
 - `POST /query`: answers from one target, selected sources, or all configured sources. Requires auth when configured.
@@ -392,6 +391,7 @@ Public HTTP contract:
 Single-index requests:
 
 ```bash
+curl http://127.0.0.1:8787/
 curl http://127.0.0.1:8787/health
 
 curl -H "Authorization: Bearer dev-token" \
@@ -408,15 +408,15 @@ Multi-source requests:
 ```bash
 curl -X POST http://localhost:8787/query \
   -H "Content-Type: application/json" \
-  -d '{"source":"api","question":"How does OAuth work?"}'
+  -d '{"source":"ragbox","question":"What does ragbox start do?"}'
 
 curl -X POST http://localhost:8787/query \
   -H "Content-Type: application/json" \
-  -d '{"source":["docs","api"],"question":"How does authentication work end to end?"}'
+  -d '{"source":["ragbox","icharts"],"question":"How do these projects handle runtime workflows?"}'
 
 curl -X POST http://localhost:8787/query \
   -H "Content-Type: application/json" \
-  -d '{"allSources":true,"question":"What are the deployment steps?"}'
+  -d '{"allSources":true,"question":"What documentation topics are available?"}'
 
 curl -X POST http://localhost:8787/reload
 ```
@@ -627,7 +627,7 @@ The two approaches can also be combined: use vector search for broad candidate r
 - `PAGEINDEX_CLI is required to run PageIndex`: set `PAGEINDEX_CLI=/path/to/run_pageindex.py`.
 - `OPENAI_API_KEY is required for query`: set `OPENAI_API_KEY` or pass `--api-key`.
 - `Expected a docs folder... or a ragbox output directory`: pass either the docs folder with `.pageindex/`, or the output directory itself.
-- `PageIndex completed but no generated JSON result was found`: if your PageIndex CLI does not use the default `--output` flag, set `PAGEINDEX_OUTPUT_ARG` to the supported output-path flag.
+- `PageIndex completed but no generated JSON result was found`: by default, ragbox reads the JSON that PageIndex writes into `results/`. If you use a custom wrapper that only writes to an explicit output path, set `PAGEINDEX_OUTPUT_ARG` or `pageIndex.outputArg` to its output-path flag.
 
 ## Limitations
 
@@ -661,9 +661,10 @@ export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.openai.com/v1
 export PAGEINDEX_MODEL=gpt-4o-mini
 export RAGBOX_E2E_QUERY_MODEL=gpt-4o-mini
-export RAGBOX_E2E_DOCS_DIR=./examples
-export RAGBOX_E2E_OUTPUT_DIR=./examples/.pageindex
-export RAGBOX_E2E_EXPECTED_TEXT=PKCE
+export RAGBOX_E2E_DOCS_DIR=./examples/ragbox
+export RAGBOX_E2E_OUTPUT_DIR=./examples/ragbox/.pageindex
+export RAGBOX_E2E_EXPECTED_TEXT=start
+export RAGBOX_E2E_QUESTION="What does ragbox start do, and when should I use it?"
 export RAGBOX_VERBOSE=1
 
 # Optional:
@@ -676,6 +677,6 @@ npm run test:e2e
 
 `.env.e2e.local` is ignored by git. Use `npm run test:e2e:raw` only when you intentionally want to bypass the helper script.
 
-The test defaults to `./examples`, runs `ragbox index ./examples --output-dir ./examples/.pageindex`, queries the generated JSON directory, then queries the docs directory itself. It prints live stage logs, per-document index progress, query progress, and heartbeat lines while long commands are still running. `./examples` contains a small multi-source fixture with `docs`, `api`, and `web` directories; for a faster OAuth-only check, set `RAGBOX_E2E_DOCS_DIR=./examples/packages/api/docs/authentication`.
+The test defaults to `./examples/ragbox`, runs `ragbox index ./examples/ragbox --output-dir ./examples/ragbox/.pageindex`, queries the generated JSON directory, then queries the docs directory itself. It prints live stage logs, per-document index progress, query progress, and heartbeat lines while long commands are still running. `./examples` contains a multi-source fixture with `ragbox` and `icharts` directories.
 
-The default e2e question is intentionally fuzzy: "What problem does PKCE solve in OAuth 2.0, and how does it reduce authorization code interception risk?" The final answer is printed in the e2e log for both the output-directory query and the docs-directory query.
+The default e2e question is: "What does ragbox start do, and when should I use it?" The final answer is printed in the e2e log for both the output-directory query and the docs-directory query.

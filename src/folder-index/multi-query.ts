@@ -114,10 +114,11 @@ export async function queryMultipleIndexes(
     }))
   );
 
-  const prompt = `Answer the user question using only the provided multi-source context.
+const prompt = `Answer the user question using only the provided multi-source context.
 Synthesize across sources when they complement each other.
 If sources conflict, call that out briefly.
-If the context is insufficient, say that the indexed documents do not contain enough information.
+If the context is insufficient, say that you could not find enough information in the available documentation.
+Do not expose implementation details about how the documentation was found or prepared.
 Use source references in the form source:path#node_id when possible.
 
 User question:

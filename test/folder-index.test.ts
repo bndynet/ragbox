@@ -38,12 +38,14 @@ async function writeFakePageIndexScript(scriptPath: string, summary = "sdk ok"):
   await fs.writeFile(
     scriptPath,
     `const fs = require("node:fs");
+const path = require("node:path");
 const args = process.argv.slice(2);
-const outputPath = args[args.indexOf("--output") + 1];
+const outputIndex = args.indexOf("--output");
+const outputPath = outputIndex === -1 ? undefined : args[outputIndex + 1];
 if (!outputPath) {
-  throw new Error("missing --output");
+  fs.mkdirSync("results", { recursive: true });
 }
-fs.writeFileSync(outputPath, JSON.stringify({
+fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), JSON.stringify({
   node_id: "root",
   summary: ${JSON.stringify(summary)},
   nodes: [{ node_id: "n1", title: "Body", text: "Body text" }]
@@ -209,11 +211,19 @@ test("loadPageIndexConfig prefers explicit query overrides over environment vari
 test("loadPageIndexConfig reads PageIndex extra args from the environment", () => {
   const config = loadPageIndexConfig({
     env: {
+      PAGEINDEX_OUTPUT_ARG: "--out",
       PAGEINDEX_EXTRA_ARGS: "--if-add-node-text yes --if-add-node-id yes"
     }
   });
 
+  assert.equal(config.outputArg, "--out");
   assert.deepEqual(config.extraArgs, ["--if-add-node-text", "yes", "--if-add-node-id", "yes"]);
+});
+
+test("loadPageIndexConfig defaults to native PageIndex results output", () => {
+  const config = loadPageIndexConfig({ env: {} });
+
+  assert.equal(config.outputArg, undefined);
 });
 
 test("chatCompletionsUrl accepts either a base URL or a full chat completions endpoint", () => {
@@ -311,6 +321,49 @@ test("createIndex reads ragbox config file options", async () => {
 
   assert.equal(result.outputDir, outputDir);
   assert.equal(result.counts.ready, 1);
+});
+
+test("createIndex reindexes stale document index artifacts", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "results-pageindex.cjs");
+  const oldTime = new Date("2020-01-01T00:00:00.000Z");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nFresh marker\n", "utf8");
+  await fs.writeFile(
+    scriptPath,
+    `const fs = require("node:fs");
+const path = require("node:path");
+const inputPath = process.argv[process.argv.indexOf("--md_path") + 1];
+const text = fs.readFileSync(inputPath, "utf8");
+fs.mkdirSync("results", { recursive: true });
+fs.writeFileSync(path.join("results", "guide_structure.json"), JSON.stringify({ node_id: "root", summary: "fresh", text }));
+`,
+    "utf8"
+  );
+
+  const first = await ragbox.createIndex(docsDir, {
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexPython: process.execPath
+  });
+  const indexPath = path.join(outputDir, first.manifest.documents[0].indexPath);
+  await fs.writeFile(indexPath, JSON.stringify({ node_id: "root", text: "stale marker" }), "utf8");
+  await fs.utimes(indexPath, oldTime, oldTime);
+
+  const second = await ragbox.createIndex(docsDir, {
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexPython: process.execPath
+  });
+
+  assert.equal(second.counts.modified, 1);
+  assert.equal(second.counts.unchanged, 0);
+  const output = JSON.parse(await fs.readFile(indexPath, "utf8")) as { text: string };
+  assert.match(output.text, /Fresh marker/);
+  assert.doesNotMatch(output.text, /stale marker/);
 });
 
 test("queryIndex returns the structured QueryResult contract", async () => {
@@ -552,6 +605,7 @@ test("watchIndex retries failed document indexing", async () => {
   await fs.writeFile(
     scriptPath,
     `const fs = require("node:fs");
+const path = require("node:path");
 const attemptPath = ${JSON.stringify(attemptPath)};
 const attempts = fs.existsSync(attemptPath) ? Number(fs.readFileSync(attemptPath, "utf8")) : 0;
 fs.writeFileSync(attemptPath, String(attempts + 1));
@@ -560,8 +614,12 @@ if (attempts === 0) {
   process.exit(1);
 }
 const args = process.argv.slice(2);
-const outputPath = args[args.indexOf("--output") + 1];
-fs.writeFileSync(outputPath, JSON.stringify({
+const outputIndex = args.indexOf("--output");
+const outputPath = outputIndex === -1 ? undefined : args[outputIndex + 1];
+if (!outputPath) {
+  fs.mkdirSync("results", { recursive: true });
+}
+fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), JSON.stringify({
   node_id: "root",
   summary: "retry ok",
   nodes: [{ node_id: "n1", title: "Body", text: "Body text" }]
@@ -607,6 +665,7 @@ test("index CLI forwards shared LLM flags to PageIndex", async () => {
   await fs.writeFile(
     scriptPath,
     `const fs = require("node:fs");
+const path = require("node:path");
 const args = process.argv.slice(2);
 function value(flag) {
   const index = args.indexOf(flag);
@@ -623,9 +682,9 @@ if (process.env.OPENAI_API_KEY !== "arg-key") {
 }
 const outputPath = value("--output");
 if (!outputPath) {
-  throw new Error("missing --output");
+  fs.mkdirSync("results", { recursive: true });
 }
-fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "cli ok", text: "Body" }));
+fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), JSON.stringify({ node_id: "root", summary: "cli ok", text: "Body" }));
 `,
     "utf8"
   );
@@ -676,9 +735,14 @@ test("index CLI --json prints a versioned contract", async () => {
   await fs.writeFile(
     scriptPath,
     `const fs = require("node:fs");
+const path = require("node:path");
 const args = process.argv.slice(2);
-const outputPath = args[args.indexOf("--output") + 1];
-fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "contract ok", text: "Body" }));
+const outputIndex = args.indexOf("--output");
+const outputPath = outputIndex === -1 ? undefined : args[outputIndex + 1];
+if (!outputPath) {
+  fs.mkdirSync("results", { recursive: true });
+}
+fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), JSON.stringify({ node_id: "root", summary: "contract ok", text: "Body" }));
 `,
     "utf8"
   );
@@ -715,6 +779,7 @@ fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "contrac
     manifestPath: string;
     rootTreePath: string;
     counts: { total: number; ready: number; failed: number };
+    failures: unknown[];
   };
 
   assert.equal(output.version, 1);
@@ -733,6 +798,84 @@ fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "contrac
     unchanged: 0,
     deleted: 0
   });
+  assert.deepEqual(output.failures, []);
+});
+
+test("index CLI prints failed document errors", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "failing-pageindex.cjs");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await fs.writeFile(
+    scriptPath,
+    `process.stdout.write("pageindex stdout detail\\n");
+process.stderr.write("pageindex stderr detail\\n");
+process.exit(3);
+`,
+    "utf8"
+  );
+
+  const result = spawnSync(
+    process.execPath,
+    [cliPath, "index", docsDir, "--output-dir", outputDir, "--pageindex-python", process.execPath],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PAGEINDEX_CLI: scriptPath
+      }
+    }
+  );
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stdout, /failed=1/);
+  assert.match(result.stderr, /Failed documents:/);
+  assert.match(result.stderr, /guide\.md/);
+  assert.match(result.stderr, /PageIndex failed with exit code 3/);
+  assert.match(result.stderr, /pageindex stdout detail/);
+  assert.match(result.stderr, /pageindex stderr detail/);
+});
+
+test("index CLI --json includes failed document errors", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "failing-pageindex.cjs");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await fs.writeFile(scriptPath, `process.stderr.write("json failure detail\\n"); process.exit(2);\n`, "utf8");
+
+  const result = spawnSync(
+    process.execPath,
+    [cliPath, "index", docsDir, "--output-dir", outputDir, "--pageindex-python", process.execPath, "--json"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PAGEINDEX_CLI: scriptPath
+      }
+    }
+  );
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.equal(result.stderr, "");
+
+  const output = JSON.parse(result.stdout) as {
+    counts: { failed: number };
+    failures: Array<{ path: string; absolutePath: string; indexPath: string; error?: string }>;
+  };
+
+  assert.equal(output.counts.failed, 1);
+  assert.equal(output.failures.length, 1);
+  assert.equal(output.failures[0]?.path, "guide.md");
+  assert.equal(output.failures[0]?.absolutePath, path.join(docsDir, "guide.md"));
+  assert.match(output.failures[0]?.error ?? "", /json failure detail/);
 });
 
 test("init CLI writes a ragbox config file", async () => {
@@ -779,6 +922,7 @@ test("index CLI reads ragbox docs config and include/exclude patterns", async ()
   await fs.writeFile(
     scriptPath,
     `const fs = require("node:fs");
+const path = require("node:path");
 const args = process.argv.slice(2);
 function value(flag) {
   const index = args.indexOf(flag);
@@ -789,9 +933,9 @@ if (value("--model") !== "configured-model") {
 }
 const outputPath = value("--output");
 if (!outputPath) {
-  throw new Error("missing --output");
+  fs.mkdirSync("results", { recursive: true });
 }
-fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "configured ok", text: "Body" }));
+fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), JSON.stringify({ node_id: "root", summary: "configured ok", text: "Body" }));
 `,
     "utf8"
   );
@@ -1095,6 +1239,16 @@ test("serve exposes health, indexes, and optional bearer auth", async () => {
   });
 
   try {
+    const root = await requestJson(`${handle.url}/`);
+    assert.equal(root.status, 200);
+    assert.equal((root.body as { name: string; ok: boolean }).name, "ragbox");
+    assert.equal((root.body as { name: string; ok: boolean }).ok, true);
+    assert.equal(
+      (root.body as { endpoints: Array<{ path: string; authRequired: boolean }> }).endpoints.find((endpoint) => endpoint.path === "/query")
+        ?.authRequired,
+      true
+    );
+
     const health = await requestJson(`${handle.url}/health`);
     assert.equal(health.status, 200);
     assert.equal((health.body as { ok: boolean }).ok, true);
@@ -1222,6 +1376,40 @@ test("serve query endpoint supports a custom LlmClient and trace", async () => {
     assert.equal(body.trace?.version, 1);
     assert.equal(body.trace?.documentSelection?.rawResponse, JSON.stringify({ documents: [fixture.docId] }));
     assert.equal(calls.length, 3);
+  } finally {
+    await handle.close();
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
+test("serve query endpoint maps LLM fetch failures to upstream errors", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const originalFetch = globalThis.fetch;
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    throw new TypeError("fetch failed");
+  }) as typeof fetch;
+
+  const handle = await ragbox.startServe({
+    apiKey: "test-key",
+    baseUrl: "http://localhost:9000/api/chat/completions",
+    model: "test-model",
+    port: 0,
+    target: fixture.outputDir
+  });
+
+  try {
+    const response = await requestJson(`${handle.url}/query`, {
+      method: "POST",
+      body: {
+        question: "How does auth work?"
+      }
+    });
+
+    assert.equal(response.status, 502);
+    assert.equal((response.body as { error: { code: string } }).error.code, "upstream_error");
+    assert.match((response.body as { error: { message: string } }).error.message, /Query failed during select-documents: fetch failed/);
   } finally {
     await handle.close();
     (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
@@ -1543,10 +1731,98 @@ test("queryFolder returns answer, selections, sources, and timings", async () =>
     assert.ok(result.contextTokens > 0);
     assert.equal(result.trace, undefined);
     assert.equal(calls.length, 3);
+    assert.match(calls[2], /available documentation/);
+    assert.doesNotMatch(calls[2].toLowerCase(), /indexed documents/);
     assert.ok(result.timingsMs.total >= result.timingsMs.answer);
   } finally {
     (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
   }
+});
+
+test("queryFolder adds exact text node matches when the planner selects a parent node", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const rootDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const indexDir = path.join(outputDir, "indexes");
+  const docId = "doc:watch";
+  const indexPath = "indexes/watch.pageindex.json";
+  const calls: LlmChatRequest[] = [];
+  const llmClient = queuedLlmClient(
+    [
+      JSON.stringify({ documents: [docId] }),
+      JSON.stringify({ nodes: ["0000"] }),
+      "The updated verification phrase is RAGBOX_START_WATCH_VERIFICATION_V2. Source: watch.md#0001"
+    ],
+    calls
+  );
+  const manifest: Manifest = {
+    version: 1,
+    rootDir,
+    generatedAt: "2026-01-01T00:00:00.000Z",
+    documents: [
+      {
+        docId,
+        path: "watch.md",
+        absolutePath: path.join(rootDir, "watch.md"),
+        contentHash: "sha256:watch",
+        size: 10,
+        mtimeMs: 1,
+        title: "Watch",
+        summary: "Watch verification",
+        indexPath,
+        status: "ready"
+      }
+    ]
+  };
+  const rootTree = {
+    node_id: "root",
+    type: "root",
+    title: "docs",
+    children: [
+      {
+        node_id: docId,
+        type: "document",
+        title: "Watch",
+        summary: "Watch verification",
+        path: "watch.md",
+        index_path: indexPath
+      }
+    ]
+  };
+  const pageIndex = {
+    structure: [
+      {
+        node_id: "0000",
+        title: "Start Watch Verification",
+        text: "This document verifies the start loop.",
+        nodes: [
+          {
+            node_id: "0001",
+            title: "Verification Phrase",
+            text: "The updated verification phrase is RAGBOX_START_WATCH_VERIFICATION_V2."
+          }
+        ]
+      }
+    ]
+  };
+
+  await fs.mkdir(indexDir, { recursive: true });
+  await fs.writeFile(path.join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`, "utf8");
+  await fs.writeFile(path.join(outputDir, "root-tree.json"), `${JSON.stringify(rootTree)}\n`, "utf8");
+  await fs.writeFile(path.join(outputDir, indexPath), `${JSON.stringify(pageIndex)}\n`, "utf8");
+
+  const result = await queryFolder(outputDir, "RAGBOX_START_WATCH_VERIFICATION_V2 是什么？", {
+    llmClient,
+    model: "test-model"
+  });
+
+  assert.deepEqual(result.selectedNodes.map((node) => [node.nodeId, node.selectionReason]), [
+    ["0000", "selected_by_node_planner"],
+    ["0001", "matched_query_text"]
+  ]);
+  assert.deepEqual(result.sources.map((source) => source.reference), ["watch.md#0000", "watch.md#0001"]);
+  assert.match(calls[2]?.messages[0]?.content ?? "", /RAGBOX_START_WATCH_VERIFICATION_V2/);
+  assert.match(result.answer, /RAGBOX_START_WATCH_VERIFICATION_V2/);
 });
 
 test("queryFolder trace exposes raw selections, context size, and answer diagnostics", async () => {
@@ -1661,6 +1937,8 @@ test("queryMultipleIndexes synthesizes answers and prefixes source references", 
     );
     assert.equal(calls.length, 7);
     assert.match(calls[6], /Per-source draft answers/);
+    assert.match(calls[6], /available documentation/);
+    assert.doesNotMatch(calls[6].toLowerCase(), /indexed documents/);
     assert.match(calls[6], /docs:auth\.md#n1/);
     assert.match(calls[6], /api:auth\.md#n1/);
   } finally {
@@ -1911,4 +2189,93 @@ fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "ok", te
     summary: "ok",
     text: "Body"
   });
+});
+
+test("runPageIndex falls back when PageIndex rejects the output arg", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const scriptPath = path.join(tempDir, "results-pageindex.cjs");
+  const inputPath = path.join(tempDir, "example.md");
+  const secondInputPath = path.join(tempDir, "second.md");
+  const outputPath = path.join(tempDir, "example.pageindex.json");
+  const secondOutputPath = path.join(tempDir, "second.pageindex.json");
+  const callsPath = path.join(tempDir, "calls.log");
+
+  await fs.writeFile(inputPath, "# Results\n\nBody\n", "utf8");
+  await fs.writeFile(secondInputPath, "# Cached\n\nBody\n", "utf8");
+  await fs.writeFile(
+    scriptPath,
+    `const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const callsPath = ${JSON.stringify(callsPath)};
+if (args.includes("--output")) {
+  fs.appendFileSync(callsPath, "with-output\\n");
+  process.stderr.write("run_pageindex.py: error: unrecognized arguments: --output " + args[args.indexOf("--output") + 1] + "\\n");
+  process.exit(2);
+}
+fs.appendFileSync(callsPath, "results\\n");
+fs.mkdirSync("results", { recursive: true });
+fs.writeFileSync(path.join("results", "example_structure.json"), JSON.stringify({ node_id: "root", summary: "fallback ok", text: "Body" }));
+`,
+    "utf8"
+  );
+
+  await runPageIndex(inputPath, outputPath, {
+    pythonPath: process.execPath,
+    cliPath: scriptPath,
+    outputArg: "--output",
+    model: "test-model"
+  });
+
+  await runPageIndex(secondInputPath, secondOutputPath, {
+    pythonPath: process.execPath,
+    cliPath: scriptPath,
+    outputArg: "--output",
+    model: "test-model"
+  });
+
+  assert.deepEqual(JSON.parse(await fs.readFile(outputPath, "utf8")), {
+    node_id: "root",
+    summary: "fallback ok",
+    text: "Body"
+  });
+  assert.deepEqual(JSON.parse(await fs.readFile(secondOutputPath, "utf8")), {
+    node_id: "root",
+    summary: "fallback ok",
+    text: "Body"
+  });
+  assert.equal(await fs.readFile(callsPath, "utf8"), "with-output\nresults\nresults\n");
+});
+
+test("runPageIndex results mode overwrites stale existing output", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const scriptPath = path.join(tempDir, "results-pageindex.cjs");
+  const inputPath = path.join(tempDir, "example.md");
+  const outputPath = path.join(tempDir, "example.pageindex.json");
+  const oldTime = new Date("2020-01-01T00:00:00.000Z");
+
+  await fs.writeFile(inputPath, "# Updated\n\nRAGBOX_START_WATCH_VERIFICATION_V2\n", "utf8");
+  await fs.writeFile(outputPath, JSON.stringify({ node_id: "root", text: "stale output" }), "utf8");
+  await fs.utimes(outputPath, oldTime, oldTime);
+  await fs.writeFile(
+    scriptPath,
+    `const fs = require("node:fs");
+const path = require("node:path");
+const inputPath = process.argv[process.argv.indexOf("--md_path") + 1];
+const text = fs.readFileSync(inputPath, "utf8");
+fs.mkdirSync("results", { recursive: true });
+fs.writeFileSync(path.join("results", "example_structure.json"), JSON.stringify({ node_id: "root", text }));
+`,
+    "utf8"
+  );
+
+  await runPageIndex(inputPath, outputPath, {
+    pythonPath: process.execPath,
+    cliPath: scriptPath,
+    model: "test-model"
+  });
+
+  const output = JSON.parse(await fs.readFile(outputPath, "utf8")) as { text: string };
+  assert.match(output.text, /RAGBOX_START_WATCH_VERIFICATION_V2/);
+  assert.doesNotMatch(output.text, /stale output/);
 });

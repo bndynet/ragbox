@@ -214,6 +214,59 @@ function extractNodeText(node: JsonObject): string | undefined {
   return typeof text === "string" && text.trim() ? text.trim() : undefined;
 }
 
+function extractLexicalQueryTerms(question: string): string[] {
+  const terms = new Set<string>();
+  const codeLikeMatches = question.match(/[A-Za-z0-9_./:-]{6,}/g) ?? [];
+  for (const match of codeLikeMatches) {
+    terms.add(match.toLowerCase());
+  }
+  return [...terms];
+}
+
+function findLexicalNodeMatches(tree: unknown, question: string): Set<string> {
+  const terms = extractLexicalQueryTerms(question);
+  const matches = new Set<string>();
+  if (terms.length === 0) {
+    return matches;
+  }
+
+  const seen = new Set<unknown>();
+
+  function visit(value: unknown): void {
+    if (!value || seen.has(value)) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      seen.add(value);
+      for (const item of value) {
+        visit(item);
+      }
+      return;
+    }
+
+    if (!isObject(value)) {
+      return;
+    }
+
+    seen.add(value);
+    const nodeId = getNodeId(value);
+    const text = extractNodeText(value)?.toLowerCase();
+    if (nodeId && text && terms.some((term) => text.includes(term))) {
+      matches.add(nodeId);
+    }
+
+    for (const nestedValue of Object.values(value)) {
+      if (typeof nestedValue === "object" && nestedValue !== null) {
+        visit(nestedValue);
+      }
+    }
+  }
+
+  visit(tree);
+  return matches;
+}
+
 function getLineNumber(value: JsonObject): number | undefined {
   for (const key of ["line_num", "lineNum", "line"]) {
     const lineNumber = value[key];
@@ -515,7 +568,8 @@ export async function queryFolder(target: string, question: string, options: Pag
     const selectNodesStartedAt = Date.now();
     const treeWithoutText = stripText(pageIndexJson);
     const nodeSelection = await runQueryStage("select-nodes", async () => await selectPageIndexNodes(question, treeWithoutText, options));
-    const selectedNodeIds = nodeSelection.ids;
+    const lexicalNodeIds = findLexicalNodeMatches(pageIndexJson, question);
+    const selectedNodeIds = [...new Set([...nodeSelection.ids, ...lexicalNodeIds])];
     trace?.nodeSelections.push({
       docId,
       path: manifestRecord.path,
@@ -539,7 +593,7 @@ export async function queryFolder(target: string, question: string, options: Pag
         found: Boolean(node),
         hasText: false,
         reference,
-        selectionReason: "selected_by_node_planner"
+        selectionReason: nodeSelection.ids.includes(nodeId) ? "selected_by_node_planner" : "matched_query_text"
       };
 
       if (!node) {
@@ -615,7 +669,8 @@ export async function queryFolder(target: string, question: string, options: Pag
   }
   logVerbose(`query final answer contextParts=${sources.length}`);
   const finalPrompt = `Answer the user question using only the provided context.
-If the context is insufficient, say that the indexed documents do not contain enough information.
+If the context is insufficient, say that you could not find enough information in the available documentation.
+Do not expose implementation details about how the documentation was found or prepared.
 Include source references using the file path and node_id when possible.
 User question:
 ${question}

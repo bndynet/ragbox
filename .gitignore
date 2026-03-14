@@ -4,3 +4,5 @@ dist/
 .ragbox-index/
 *.log
 .env.e2e.local
+.DS_Store
+ragbox.config.local.json
