@@ -15,6 +15,8 @@ import {
   IndexCounts,
   IndexFolderResult,
   IndexProgressEvent,
+  LlmChatRequest,
+  LlmClient,
   Manifest,
   PageIndexOptions,
   QueryResult,
@@ -25,6 +27,8 @@ import {
 export type {
   IndexCounts,
   IndexProgressEvent,
+  LlmChatRequest,
+  LlmClient,
   QueryResult,
   WatchProgressEvent
 } from "./folder-index/types";
@@ -37,6 +41,7 @@ export type SdkOptions = {
   outputDir?: string;
   source?: string;
   env?: NodeJS.ProcessEnv;
+  llmClient?: LlmClient;
 };
 
 export type CreateIndexOptions = SdkOptions & {
@@ -175,6 +180,7 @@ async function toPageIndexOptions(options: CreateIndexOptions | QueryIndexOption
     exclude: createOptions.exclude,
     extraArgs: createOptions.pageIndexExtraArgs,
     include: createOptions.include,
+    llmClient: options.llmClient,
     model: options.model,
     outputArg: createOptions.pageIndexOutputArg,
     outputDir: options.outputDir,

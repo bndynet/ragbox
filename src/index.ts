@@ -23,6 +23,8 @@ export type {
   IndexCounts,
   InspectIndexDocument,
   InspectIndexResult,
+  LlmChatRequest,
+  LlmClient,
   QueryIndexOptions,
   QueryResult,
   SdkOptions,

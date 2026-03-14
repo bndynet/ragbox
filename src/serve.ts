@@ -4,7 +4,7 @@ import { URL } from "node:url";
 import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig } from "./config-file";
 import { queryMultipleIndexes, MultiQueryResult, MultiQueryTarget } from "./folder-index/multi-query";
 import { queryFolder } from "./folder-index/query";
-import { PageIndexOptions, QueryResult } from "./folder-index/types";
+import { LlmClient, PageIndexOptions, QueryResult } from "./folder-index/types";
 import { InspectIndexResult, validateIndex, ValidateIndexResult } from "./sdk";
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -21,6 +21,7 @@ export type ServeOptions = {
   configPath?: string;
   env?: NodeJS.ProcessEnv;
   host?: string;
+  llmClient?: LlmClient;
   model?: string;
   port?: number;
   source?: string | string[];
@@ -134,6 +135,7 @@ function queryOptionsFromServeOptions(configOptions: PageIndexOptions, options: 
     apiKey: options.apiKey,
     baseUrl: options.baseUrl,
     env: options.env,
+    llmClient: options.llmClient,
     model: options.model,
     trace
   });

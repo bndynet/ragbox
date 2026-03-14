@@ -1,5 +1,5 @@
 import { loadPageIndexConfig } from "./config";
-import { ChatMessage, PageIndexOptions } from "./types";
+import { ChatMessage, LlmChatRequest, PageIndexOptions } from "./types";
 
 export function chatCompletionsUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/$/, "");
@@ -8,6 +8,15 @@ export function chatCompletionsUrl(baseUrl: string): string {
 
 export async function chatCompletion(messages: ChatMessage[], options: PageIndexOptions = {}): Promise<string> {
   const config = loadPageIndexConfig(options);
+  const request: LlmChatRequest = {
+    messages,
+    model: config.model,
+    temperature: 0
+  };
+
+  if (options.llmClient) {
+    return await options.llmClient.chatCompletion(request);
+  }
 
   if (!config.apiKey) {
     throw new Error("OPENAI_API_KEY is required for query");
@@ -20,9 +29,9 @@ export async function chatCompletion(messages: ChatMessage[], options: PageIndex
       Authorization: `Bearer ${config.apiKey}`
     },
     body: JSON.stringify({
-      model: config.model,
-      messages,
-      temperature: 0
+      model: request.model,
+      messages: request.messages,
+      temperature: request.temperature
     })
   });
 

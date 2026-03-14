@@ -31,12 +31,28 @@ export type RootTreeNode = {
   children?: RootTreeNode[];
 };
 
+export type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+export type LlmChatRequest = {
+  messages: ChatMessage[];
+  model: string;
+  temperature: number;
+};
+
+export type LlmClient = {
+  chatCompletion: (request: LlmChatRequest) => Promise<string>;
+};
+
 export type PageIndexOptions = {
   pythonPath?: string;
   cliPath?: string;
   model?: string;
   baseUrl?: string;
   apiKey?: string;
+  llmClient?: LlmClient;
   concurrency?: number;
   exclude?: string[];
   include?: string[];
@@ -402,9 +418,4 @@ export type QueryResult = {
   warnings: string[];
   timingsMs: QueryTimings;
   trace?: QueryTrace;
-};
-
-export type ChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
 };

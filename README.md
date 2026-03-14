@@ -1,8 +1,16 @@
 # ragbox
 
-Structure-first RAG for Markdown/MDX folders.
+Ask questions about your Markdown/MDX docs from the terminal, an HTTP service, or a Node.js app.
 
-`ragbox` indexes a docs folder into local PageIndex JSON files, then answers questions from that index with an OpenAI-compatible chat model. It keeps one PageIndex tree per source file and one folder-level `root-tree.json` for document selection.
+`ragbox` turns a documentation folder into a local queryable index. You can use it to search product docs, API guides, runbooks, internal handbooks, and multi-package docs without setting up a vector database.
+
+Use `ragbox` when you want to:
+
+- answer questions from a local docs folder
+- inspect which docs and sections were used for an answer
+- keep an index fresh while docs change
+- expose docs Q&A to an internal backend through HTTP
+- run the same workflow locally, in CI, and in a container
 
 [中文文档](./README.zh-CN.md)
 
@@ -14,27 +22,36 @@ npm install -g @bndynet/ragbox
 
 ## Requirements
 
-- Node.js 18 or newer.
-- A local PageIndex Python script, usually `run_pageindex.py`.
-- An OpenAI-compatible `/chat/completions` endpoint.
-- An API key for that endpoint.
-- A source folder containing `.md` or `.mdx` files.
+You need:
 
-`ragbox` does not install PageIndex. Point `PAGEINDEX_CLI` to your local PageIndex script.
+- Node.js 18 or newer
+- a docs folder containing `.md` or `.mdx` files
+- a local PageIndex Python script, usually `run_pageindex.py`
+- an OpenAI-compatible `/chat/completions` endpoint
+- an API key for that endpoint
+
+`ragbox` does not install PageIndex for you. Set `PAGEINDEX_CLI` to your local PageIndex script before indexing.
 
 ## Quick Start
+
+Index a docs folder, ask a question, then optionally keep the index updated:
 
 ```bash
 export PAGEINDEX_CLI=/path/to/PageIndex/run_pageindex.py
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.openai.com/v1
 
+# 1. Build the local index.
 ragbox index ./docs --output-dir ./.ragbox-index
+
+# 2. Ask a question.
 ragbox query ./.ragbox-index "How do I configure authentication?"
+
+# 3. Optional: keep the index fresh while docs change.
 ragbox watch ./docs --output-dir ./.ragbox-index
 ```
 
-You can also pass the same model service settings as flags on `index`, `watch`, or `query`:
+You can pass the model settings as flags instead of environment variables:
 
 ```bash
 ragbox index ./docs \
@@ -49,9 +66,22 @@ ragbox query ./.ragbox-index "How do I configure authentication?" \
   --model gpt-4o-mini
 ```
 
+## Common Workflows
+
+| Goal | Use |
+| --- | --- |
+| Try ragbox on one docs folder | `ragbox index ./docs --output-dir ./.ragbox-index`, then `ragbox query ./.ragbox-index "..."` |
+| Avoid repeating paths and model settings | `ragbox init`, then edit `ragbox.config.json` |
+| Query several docs folders together | Configure `sources`, run `ragbox index --source <name>`, then `ragbox query --all-sources "..."` |
+| Debug answer quality | `ragbox query --trace --json "..."` or `ragbox trace query "..."` |
+| Check whether an index is usable | `ragbox status ./.ragbox-index` |
+| Diagnose local setup issues | `ragbox doctor` |
+| Keep docs indexed while editing | `ragbox watch ./docs --output-dir ./.ragbox-index --jsonl` |
+| Let another service query docs | `ragbox serve ./.ragbox-index --auth-token <token>` |
+
 ## Project Config
 
-Create a project config:
+Once the commands get repetitive, create a project config:
 
 ```bash
 ragbox init
@@ -76,11 +106,11 @@ This writes `ragbox.config.json`:
 }
 ```
 
-Relative paths in the config are resolved from the config file directory. CLI flags override config values. API keys should usually stay in environment variables instead of `ragbox.config.json`.
+Relative paths are resolved from the config file directory. CLI flags override config values. Keep API keys in environment variables or your secret manager instead of `ragbox.config.json`.
 
 For one documentation source, use the top-level `docs` object. No `--source` flag is needed. If a project needs multiple named sources, use the optional `sources` map.
 
-Use the configured docs:
+After that, commands can use the configured docs automatically:
 
 ```bash
 ragbox index
@@ -89,7 +119,7 @@ ragbox watch --jsonl
 ragbox --config ./ragbox.config.json index
 ```
 
-For multiple documentation directories, name each one under `sources`:
+For multiple documentation directories, name each one under `sources`. This is useful for monorepos, product docs plus API docs, or separate app/package documentation:
 
 ```json
 {
@@ -173,9 +203,11 @@ For production, prefer environment variables or a secret manager for API keys. P
 
 ## Commands
 
+Use this section as a command reference. If you are new to `ragbox`, start with [Quick Start](#quick-start) and [Common Workflows](#common-workflows).
+
 ### `ragbox init`
 
-Creates a `ragbox.config.json` file.
+Creates a `ragbox.config.json` file so you do not need to repeat docs paths, output paths, and model settings in every command.
 
 ```bash
 ragbox init
@@ -185,7 +217,7 @@ ragbox init --output ./configs/ragbox.config.json --force
 
 ### `ragbox index <folder>`
 
-Indexes Markdown/MDX files.
+Builds or updates the local index for a Markdown/MDX folder. Run this before `query` or `serve`.
 
 ```bash
 ragbox index ./docs
@@ -224,7 +256,7 @@ Use `--json` to print a versioned machine-readable result with output paths and 
 
 ### `ragbox inspect [target]`
 
-Prints manifest and document-level details for an index.
+Shows what is inside an index, including document status and counts. Use it when an index exists but you want to see what was actually indexed.
 
 ```bash
 ragbox inspect ./.ragbox-index
@@ -234,7 +266,7 @@ ragbox inspect --all-sources --json
 
 ### `ragbox status [target]`
 
-Validates local index files and reports whether each target is query-ready.
+Checks whether an index is ready to query. This is useful in CI, deploy scripts, and smoke checks.
 
 ```bash
 ragbox status ./.ragbox-index
@@ -244,7 +276,7 @@ ragbox status --json
 
 ### `ragbox doctor [target]`
 
-Runs local diagnostics for config, PageIndex CLI configuration, LLM settings, API key presence, and index validity. It does not call the network.
+Checks the local setup: config, PageIndex CLI path, LLM settings, API key presence, and index validity. It does not call the network.
 
 ```bash
 ragbox doctor
@@ -254,7 +286,7 @@ ragbox doctor --all-sources
 
 ### `ragbox query [target] <question>`
 
-Answers from either a docs folder with a default `.pageindex` index, or an existing ragbox output directory.
+Answers a question from either a docs folder with a default `.pageindex` index, or an existing ragbox output directory.
 
 ```bash
 ragbox query ./docs "How do I configure authentication?"
@@ -441,7 +473,9 @@ ragbox index /srv/app/docs --output-dir /var/lib/ragbox/docs-index --concurrency
 ragbox query /var/lib/ragbox/docs-index "How do I configure authentication?"
 ```
 
-SDK use:
+## Use ragbox from Node.js
+
+Use the SDK when another Node.js service should create indexes, query docs, validate indexes, or run `serve` programmatically.
 
 ```js
 const {
@@ -490,7 +524,38 @@ await watcher.ready;
 await watcher.close();
 ```
 
-The package root exports the product SDK API. Lower-level helpers are still available under `advanced` for custom integrations:
+Custom LLM client:
+
+```js
+const { queryIndex, startServe } = require("@bndynet/ragbox");
+
+const llmClient = {
+  async chatCompletion(request) {
+    // request.messages, request.model, request.temperature
+    return await callYourModelGateway(request);
+  }
+};
+
+const result = await queryIndex(
+  "/var/lib/ragbox/docs-index",
+  "How do I configure authentication?",
+  {
+    llmClient,
+    model: "internal-docs-model"
+  }
+);
+
+const server = await startServe({
+  target: "/var/lib/ragbox/docs-index",
+  llmClient,
+  model: "internal-docs-model",
+  port: 8787
+});
+```
+
+`llmClient` is a thin SDK-only provider boundary for direct query-time chat completions. It is useful for local models, model gateways, retries, timeouts, logging, and tests. `ragbox` does not load provider plugins from config files; CLI commands still use the OpenAI-compatible settings from flags, config, and environment variables.
+
+The package root exports the stable product SDK API. Lower-level helpers are still available under `advanced` for custom integrations:
 
 ```js
 const { advanced } = require("@bndynet/ragbox");
@@ -498,15 +563,16 @@ const { advanced } = require("@bndynet/ragbox");
 const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-index");
 ```
 
-## How It Works
+## What Happens During Query
 
-`ragbox` starts from document structure:
+At a high level, `ragbox` keeps the structure of your docs instead of flattening everything into anonymous chunks:
 
-- one Markdown/MDX file -> one PageIndex tree
-- one docs folder -> one `manifest.json` and one `root-tree.json`
-- query flow -> select documents, select PageIndex nodes, answer from selected node text
+- each Markdown/MDX file becomes a structured PageIndex tree
+- the docs folder gets a small index manifest
+- a query first selects likely documents, then likely sections inside those documents
+- the final answer is generated only from the selected section text
 
-No vector database is required for the basic flow. For Markdown indexing, ragbox asks PageIndex to include `node_id` and `text` by default. During query, `text` is stripped from the node-selection prompt and only added back for the final answer context.
+This is why `--trace` can show which documents and nodes were selected. It is also why the basic flow does not require a vector database.
 
 ## Compared With Vector DB RAG
 
@@ -536,7 +602,7 @@ The two approaches can also be combined: use vector search for broad candidate r
 - Query quality depends on PageIndex JSON shape and the configured LLM.
 - The basic flow uses tree selection, not vector search.
 
-## Local Development
+## For Contributors
 
 ```bash
 npm install

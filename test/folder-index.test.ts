@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import * as ragbox from "../src/index";
+import type { LlmChatRequest, LlmClient } from "../src/index";
 import { loadPageIndexConfig } from "../src/folder-index/config";
 import { hashFile } from "../src/folder-index/hash";
 import { chatCompletionsUrl } from "../src/folder-index/llm-client";
@@ -99,6 +100,19 @@ async function requestJson(url: string, options: {
     }
     request.end();
   });
+}
+
+function queuedLlmClient(responses: string[], calls: LlmChatRequest[] = []): LlmClient {
+  return {
+    chatCompletion: async (request) => {
+      calls.push(request);
+      const response = responses.shift();
+      if (response === undefined) {
+        throw new Error("No queued LLM response");
+      }
+      return response;
+    }
+  };
 }
 
 async function writeValidIndexFixture(baseDir: string, outputInsideDocs = false): Promise<{
@@ -337,6 +351,41 @@ test("queryIndex returns the structured QueryResult contract", async () => {
     assert.deepEqual(result.sources.map((source) => source.reference), ["auth.md#n1"]);
     assert.equal(result.selectedDocuments[0]?.docId, docId);
     assert.equal(result.selectedNodes[0]?.nodeId, "n1");
+  } finally {
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
+test("queryIndex supports a custom LlmClient without fetch or API key", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const { outputDir, docId } = await writeValidIndexFixture(tempDir);
+  const calls: LlmChatRequest[] = [];
+  const llmClient = queuedLlmClient(
+    [
+      JSON.stringify({ documents: [docId] }),
+      JSON.stringify({ nodes: ["n1"] }),
+      "Custom answer. Source: auth.md#n1"
+    ],
+    calls
+  );
+  const originalFetch = globalThis.fetch;
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    throw new Error("fetch should not be called when llmClient is provided");
+  }) as typeof fetch;
+
+  try {
+    const result = await ragbox.queryIndex(outputDir, "What is in auth?", {
+      llmClient,
+      model: "custom-model"
+    });
+
+    assert.equal(result.model, "custom-model");
+    assert.equal(result.answer, "Custom answer. Source: auth.md#n1");
+    assert.deepEqual(result.sources.map((source) => source.reference), ["auth.md#n1"]);
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls.map((call) => call.model), ["custom-model", "custom-model", "custom-model"]);
+    assert.deepEqual(calls.map((call) => call.temperature), [0, 0, 0]);
   } finally {
     (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
   }
@@ -1125,6 +1174,60 @@ test("serve query endpoint returns QueryResult and supports trace", async () => 
   }
 });
 
+test("serve query endpoint supports a custom LlmClient and trace", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const calls: LlmChatRequest[] = [];
+  const llmClient = queuedLlmClient(
+    [
+      JSON.stringify({ documents: [fixture.docId] }),
+      JSON.stringify({ nodes: ["n1"] }),
+      "Serve custom answer. Source: auth.md#n1"
+    ],
+    calls
+  );
+  const originalFetch = globalThis.fetch;
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    throw new Error("fetch should not be called when llmClient is provided");
+  }) as typeof fetch;
+
+  const handle = await ragbox.startServe({
+    llmClient,
+    model: "serve-custom-model",
+    port: 0,
+    target: fixture.outputDir
+  });
+
+  try {
+    const response = await requestJson(`${handle.url}/query`, {
+      method: "POST",
+      body: {
+        question: "How does auth work?",
+        trace: true
+      }
+    });
+
+    assert.equal(response.status, 200);
+    const body = response.body as {
+      answer: string;
+      model: string;
+      trace?: {
+        version: number;
+        documentSelection?: { rawResponse: string };
+      };
+    };
+    assert.equal(body.model, "serve-custom-model");
+    assert.equal(body.answer, "Serve custom answer. Source: auth.md#n1");
+    assert.equal(body.trace?.version, 1);
+    assert.equal(body.trace?.documentSelection?.rawResponse, JSON.stringify({ documents: [fixture.docId] }));
+    assert.equal(calls.length, 3);
+  } finally {
+    await handle.close();
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
 test("serve query endpoint supports multi-source config and reload", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
   const docsFixture = await writeValidIndexFixture(path.join(tempDir, "docs-fixture"));
@@ -1545,6 +1648,53 @@ test("queryMultipleIndexes synthesizes answers and prefixes source references", 
     assert.match(calls[6], /Per-source draft answers/);
     assert.match(calls[6], /docs:auth\.md#n1/);
     assert.match(calls[6], /api:auth\.md#n1/);
+  } finally {
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+  }
+});
+
+test("queryMultipleIndexes uses a custom LlmClient for source queries and final synthesis", async () => {
+  const docsFixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const apiFixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsFixture = await writeValidIndexFixture(docsFixtureDir);
+  const apiFixture = await writeValidIndexFixture(apiFixtureDir);
+  const calls: LlmChatRequest[] = [];
+  const llmClient = queuedLlmClient(
+    [
+      JSON.stringify({ documents: [docsFixture.docId] }),
+      JSON.stringify({ nodes: ["n1"] }),
+      "Docs answer",
+      JSON.stringify({ documents: [apiFixture.docId] }),
+      JSON.stringify({ nodes: ["n1"] }),
+      "API answer",
+      "Fused custom answer"
+    ],
+    calls
+  );
+  const originalFetch = globalThis.fetch;
+
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async () => {
+    throw new Error("fetch should not be called when llmClient is provided");
+  }) as typeof fetch;
+
+  try {
+    const result = await queryMultipleIndexes(
+      [
+        { name: "docs", target: docsFixture.outputDir },
+        { name: "api", target: apiFixture.outputDir }
+      ],
+      "How do I deploy?",
+      {
+        llmClient,
+        model: "custom-model"
+      }
+    );
+
+    assert.equal(result.answer, "Fused custom answer");
+    assert.deepEqual(result.sourcesQueried, ["docs", "api"]);
+    assert.equal(calls.length, 7);
+    assert.deepEqual(calls.map((call) => call.model), Array(7).fill("custom-model"));
+    assert.match(calls[6]?.messages[0]?.content ?? "", /Per-source draft answers/);
   } finally {
     (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
   }

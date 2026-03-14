@@ -1,6 +1,16 @@
 # ragbox 中文文档
 
-`ragbox` 是一个面向 Markdown/MDX 文档目录的结构化 RAG 工具。它把文档目录索引成本地 PageIndex JSON，然后用 OpenAI-compatible 模型基于索引回答问题。
+`ragbox` 可以让你从命令行、HTTP 服务或 Node.js 应用里直接询问 Markdown/MDX 文档。
+
+它会把文档目录变成本地可查询索引，适合产品文档、API 指南、运维 runbook、内部手册和 monorepo 多包文档。基础流程不需要部署向量数据库。
+
+适合这些场景：
+
+- 对本地 docs 目录提问
+- 查看一次回答用了哪些文档和章节
+- 文档变化时持续刷新索引
+- 通过 HTTP 把文档问答接进内部 backend
+- 在本地、CI 和容器里使用同一套索引/查询流程
 
 ## 安装
 
@@ -13,26 +23,33 @@ npm install -g @bndynet/ragbox
 你需要准备：
 
 - Node.js 18 或更新版本
+- 一个包含 `.md` 或 `.mdx` 的文档目录
 - 本地 PageIndex Python 脚本，通常是 `run_pageindex.py`
 - 一个兼容 OpenAI `/chat/completions` 的模型服务
 - 模型服务 API key
-- 一个包含 `.md` 或 `.mdx` 的文档目录
 
-`ragbox` 不会自动安装 PageIndex，需要你通过 `PAGEINDEX_CLI` 指定本地脚本路径。
+`ragbox` 不会自动安装 PageIndex。索引前需要把 `PAGEINDEX_CLI` 设置成本地 PageIndex 脚本路径。
 
 ## 快速开始
+
+先索引文档目录，再提问；如果文档会持续变化，可以启动 watch：
 
 ```bash
 export PAGEINDEX_CLI=/path/to/PageIndex/run_pageindex.py
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.openai.com/v1
 
+# 1. 生成本地索引
 ragbox index ./docs --output-dir ./.ragbox-index
+
+# 2. 提问
 ragbox query ./.ragbox-index "怎么配置认证？"
+
+# 3. 可选：文档变化时持续刷新索引
 ragbox watch ./docs --output-dir ./.ragbox-index
 ```
 
-同一套模型服务参数也可以直接通过命令传给 `index`、`watch` 或 `query`：
+模型服务参数也可以不放环境变量，直接通过命令传入：
 
 ```bash
 ragbox index ./docs \
@@ -47,9 +64,22 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
   --model gpt-4o-mini
 ```
 
+## 常见使用方式
+
+| 目标 | 使用方式 |
+| --- | --- |
+| 先在一个 docs 目录试用 | `ragbox index ./docs --output-dir ./.ragbox-index`，然后 `ragbox query ./.ragbox-index "..."` |
+| 不想每次重复路径和模型配置 | `ragbox init`，再编辑 `ragbox.config.json` |
+| 多个文档目录一起查询 | 配置 `sources`，分别跑 `ragbox index --source <name>`，再用 `ragbox query --all-sources "..."` |
+| 调试回答质量 | `ragbox query --trace --json "..."` 或 `ragbox trace query "..."` |
+| 检查索引是否可用 | `ragbox status ./.ragbox-index` |
+| 诊断本地配置问题 | `ragbox doctor` |
+| 编辑文档时自动更新索引 | `ragbox watch ./docs --output-dir ./.ragbox-index --jsonl` |
+| 让其他服务通过 HTTP 查询文档 | `ragbox serve ./.ragbox-index --auth-token <token>` |
+
 ## 项目配置
 
-创建项目配置：
+当命令里的路径和模型参数开始变多时，建议创建项目配置：
 
 ```bash
 ragbox init
@@ -74,11 +104,11 @@ ragbox init
 }
 ```
 
-配置文件中的相对路径会按配置文件所在目录解析。命令行参数会覆盖配置文件值。API key 通常建议继续放在环境变量里，不要写进 `ragbox.config.json`。
+配置文件中的相对路径会按配置文件所在目录解析。命令行参数会覆盖配置文件值。API key 建议放在环境变量或 secret manager，不要写进 `ragbox.config.json`。
 
 只有一个文档源时，用顶层 `docs` 就够了，不需要传 `--source`。项目里确实有多个命名文档源时，再使用可选的 `sources` 映射。
 
-使用配置里的 docs：
+之后命令会自动使用配置里的 docs：
 
 ```bash
 ragbox index
@@ -87,7 +117,7 @@ ragbox watch --jsonl
 ragbox --config ./ragbox.config.json index
 ```
 
-如果有多个文档目录，在 `sources` 里给每个目录起一个名字：
+如果有多个文档目录，在 `sources` 里给每个目录起一个名字。这个模式适合 monorepo、产品文档加 API 文档、多个 app/package 各自有 docs 的项目：
 
 ```json
 {
@@ -171,9 +201,11 @@ ragbox --config ./ragbox.config.prod.json query "怎么部署？"
 
 ## 命令说明
 
+这一节是命令参考。如果你是第一次使用，建议先看 [快速开始](#快速开始) 和 [常见使用方式](#常见使用方式)。
+
 ### `ragbox init`
 
-创建 `ragbox.config.json` 文件。
+创建 `ragbox.config.json` 文件，避免每条命令都重复传 docs 路径、输出目录和模型设置。
 
 ```bash
 ragbox init
@@ -183,7 +215,7 @@ ragbox init --output ./configs/ragbox.config.json --force
 
 ### `ragbox index <folder>`
 
-索引 Markdown/MDX 文档目录。
+为 Markdown/MDX 文档目录生成或更新本地索引。使用 `query` 或 `serve` 前需要先执行它。
 
 ```bash
 ragbox index ./docs
@@ -222,7 +254,7 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 
 ### `ragbox inspect [target]`
 
-查看索引的 manifest 和文档级明细。
+查看索引里有哪些文档、每篇文档的状态和统计信息。适合确认“到底索引进去了什么”。
 
 ```bash
 ragbox inspect ./.ragbox-index
@@ -232,7 +264,7 @@ ragbox inspect --all-sources --json
 
 ### `ragbox status [target]`
 
-校验本地索引文件，并报告每个 target 是否处于可 query 状态。
+检查索引是否已经可以 query。适合 CI、部署脚本和 smoke check。
 
 ```bash
 ragbox status ./.ragbox-index
@@ -242,7 +274,7 @@ ragbox status --json
 
 ### `ragbox doctor [target]`
 
-执行本地诊断，检查配置、PageIndex CLI 配置、LLM 设置、API key 是否存在，以及索引是否有效。这个命令不会发起网络请求。
+检查本地配置、PageIndex CLI 路径、LLM 设置、API key 是否存在，以及索引是否有效。这个命令不会发起网络请求。
 
 ```bash
 ragbox doctor
@@ -450,7 +482,9 @@ ragbox index /srv/app/docs --output-dir /var/lib/ragbox/docs-index --concurrency
 ragbox query /var/lib/ragbox/docs-index "怎么配置认证？"
 ```
 
-SDK 调用：
+## 在 Node.js 中使用 ragbox
+
+当你的 Node.js 服务需要创建索引、查询文档、校验索引，或以编程方式启动 `serve` 时，可以使用 SDK。
 
 ```js
 const {
@@ -499,7 +533,38 @@ await watcher.ready;
 await watcher.close();
 ```
 
-包根入口只导出产品化 SDK API。底层工具仍保留在 `advanced` namespace，适合更定制的集成：
+自定义 LLM client：
+
+```js
+const { queryIndex, startServe } = require("@bndynet/ragbox");
+
+const llmClient = {
+  async chatCompletion(request) {
+    // request.messages, request.model, request.temperature
+    return await callYourModelGateway(request);
+  }
+};
+
+const result = await queryIndex(
+  "/var/lib/ragbox/docs-index",
+  "怎么配置认证？",
+  {
+    llmClient,
+    model: "internal-docs-model"
+  }
+);
+
+const server = await startServe({
+  target: "/var/lib/ragbox/docs-index",
+  llmClient,
+  model: "internal-docs-model",
+  port: 8787
+});
+```
+
+`llmClient` 是一个只用于 SDK 的薄 provider 边界，负责 query 阶段的直接 chat completion。它适合接本地模型、内部模型网关、重试、超时、日志和测试 mock。`ragbox` 不会从配置文件动态加载 provider 插件；CLI 仍然使用 flags、config 和环境变量里的 OpenAI-compatible 设置。
+
+包根入口导出稳定的产品化 SDK API。底层工具仍保留在 `advanced` namespace，适合更定制的集成：
 
 ```js
 const { advanced } = require("@bndynet/ragbox");
@@ -507,15 +572,16 @@ const { advanced } = require("@bndynet/ragbox");
 const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-index");
 ```
 
-## 设计思路
+## 查询时发生了什么
 
-核心思路：
+简单说，`ragbox` 会保留文档结构，而不是一开始就把所有内容切成匿名 chunk：
 
-- 一个 `.md`/`.mdx` 文件生成一棵 PageIndex 树
-- 一个文档目录生成一个 `manifest.json` 和一个 `root-tree.json`
-- 查询时先选相关文档，再选相关节点，最后只用选中节点的正文回答
+- 每个 `.md`/`.mdx` 文件会生成一棵结构化 PageIndex 树
+- 文档目录会生成一份索引清单
+- 查询时先选择可能相关的文档，再选择文档里的相关章节
+- 最终回答只基于选中的章节正文生成
 
-基础流程不需要向量数据库。Markdown 索引时，ragbox 默认会让 PageIndex 生成 `node_id` 和 `text`。query 时只会在“选节点”prompt 里临时去掉 `text`，最终回答阶段仍会使用选中节点的正文。
+所以 `--trace` 能告诉你选了哪些文档和节点。基础流程也因此不需要部署向量数据库。
 
 ## 与传统 Vector DB RAG 的对比
 
@@ -545,7 +611,7 @@ const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-
 - 查询质量依赖 PageIndex JSON 结构和所使用的 LLM
 - 当前基础流程是树结构选择，不是向量检索
 
-## 本地开发
+## 贡献者开发
 
 ```bash
 npm install
