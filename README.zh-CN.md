@@ -652,40 +652,6 @@ npm run build
 npm run ragbox -- --help
 ```
 
-### 真实 E2E 验证
+### Examples
 
-推荐用脚本运行：
-
-```bash
-cp .env.e2e.local.example .env.e2e.local
-npm run test:e2e
-```
-
-`npm run test:e2e` 会运行 `./scripts/e2e.sh`，脚本会读取 `.env.e2e.local`。你也可以直接 export 变量后运行它：
-
-```bash
-export RAGBOX_E2E=1
-export PAGEINDEX_CLI=/path/to/PageIndex/run_pageindex.py
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.openai.com/v1
-export PAGEINDEX_MODEL=gpt-4o-mini
-export RAGBOX_E2E_QUERY_MODEL=gpt-4o-mini
-export RAGBOX_E2E_DOCS_DIR=./examples/ragbox
-export RAGBOX_E2E_OUTPUT_DIR=./examples/ragbox/.pageindex
-export RAGBOX_E2E_EXPECTED_TEXT=start
-export RAGBOX_E2E_QUESTION="What does ragbox start do, and when should I use it?"
-export RAGBOX_VERBOSE=1
-
-# 可选
-export RAGBOX_E2E_PAGEINDEX_PYTHON=/path/to/python
-export RAGBOX_E2E_HEARTBEAT_MS=10000
-export RAGBOX_E2E_COMMAND_TIMEOUT_MS=300000
-
-npm run test:e2e
-```
-
-`.env.e2e.local` 已被 git ignore。只有在你明确想绕过脚本时，才使用 `npm run test:e2e:raw`。
-
-这个测试默认使用 `./examples/ragbox`，执行 `ragbox index ./examples/ragbox --output-dir ./examples/ragbox/.pageindex`，查询生成的 JSON 索引目录，然后再查询 docs 目录本身。运行时会打印实时阶段日志、逐文档索引进度、query 进度，以及长时间命令的心跳日志。`./examples` 现在包含 `ragbox` 和 `icharts` 两个 source。
-
-默认 e2e 问题是：“What does ragbox start do, and when should I use it?”。e2e 日志会分别打印从索引目录 query 和从 docs 目录 query 得到的最终答案。
+可运行的本地 fixture 和 smoke-test 命令都放在 [`examples/README.md`](./examples/README.md)。需要用真实 PageIndex 和 LLM 配置验证 index、query、多 source 或 `start` 服务循环时，看那里即可。

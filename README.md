@@ -643,40 +643,6 @@ npm run build
 npm run ragbox -- --help
 ```
 
-### Real E2E Validation
+### Examples
 
-Use the helper script:
-
-```bash
-cp .env.e2e.local.example .env.e2e.local 2>/dev/null || true
-npm run test:e2e
-```
-
-`npm run test:e2e` runs `./scripts/e2e.sh`, which reads `.env.e2e.local`. Or edit/export the variables directly before running it:
-
-```bash
-export RAGBOX_E2E=1
-export PAGEINDEX_CLI=/path/to/PageIndex/run_pageindex.py
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.openai.com/v1
-export PAGEINDEX_MODEL=gpt-4o-mini
-export RAGBOX_E2E_QUERY_MODEL=gpt-4o-mini
-export RAGBOX_E2E_DOCS_DIR=./examples/ragbox
-export RAGBOX_E2E_OUTPUT_DIR=./examples/ragbox/.pageindex
-export RAGBOX_E2E_EXPECTED_TEXT=start
-export RAGBOX_E2E_QUESTION="What does ragbox start do, and when should I use it?"
-export RAGBOX_VERBOSE=1
-
-# Optional:
-export RAGBOX_E2E_PAGEINDEX_PYTHON=/path/to/python
-export RAGBOX_E2E_HEARTBEAT_MS=10000
-export RAGBOX_E2E_COMMAND_TIMEOUT_MS=300000
-
-npm run test:e2e
-```
-
-`.env.e2e.local` is ignored by git. Use `npm run test:e2e:raw` only when you intentionally want to bypass the helper script.
-
-The test defaults to `./examples/ragbox`, runs `ragbox index ./examples/ragbox --output-dir ./examples/ragbox/.pageindex`, queries the generated JSON directory, then queries the docs directory itself. It prints live stage logs, per-document index progress, query progress, and heartbeat lines while long commands are still running. `./examples` contains a multi-source fixture with `ragbox` and `icharts` directories.
-
-The default e2e question is: "What does ragbox start do, and when should I use it?" The final answer is printed in the e2e log for both the output-directory query and the docs-directory query.
+Runnable local fixtures and smoke-test commands live in [`examples/README.md`](./examples/README.md). Use that guide when you want to test indexing, query, multi-source config, or the `start` service loop with real PageIndex and LLM settings.

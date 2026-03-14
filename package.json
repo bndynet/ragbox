@@ -24,10 +24,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && node --test dist/test/folder-index.test.js dist/test/e2e.test.js",
+    "test": "npm run test:unit",
     "test:unit": "tsc -p tsconfig.json && node --test dist/test/folder-index.test.js",
-    "test:e2e": "./scripts/e2e.sh",
-    "test:e2e:raw": "tsc -p tsconfig.json && node dist/test/e2e.test.js",
     "ragbox": "node dist/src/cli.js"
   },
   "dependencies": {
