@@ -1,4 +1,4 @@
-# ragbox 中文文档
+# RAGbox 中文文档
 
 `ragbox` 可以让你从命令行、HTTP 服务或 Node.js 应用里直接询问 Markdown/MDX 文档。
 

@@ -1,4 +1,4 @@
-# ragbox
+# RAGbox
 
 Ask questions about your Markdown/MDX docs from the terminal, an HTTP service, or a Node.js app.
 
