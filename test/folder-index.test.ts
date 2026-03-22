@@ -64,6 +64,63 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
+async function writeExecutable(filePath: string, content: string): Promise<void> {
+  await fs.writeFile(filePath, content, "utf8");
+  await fs.chmod(filePath, 0o755);
+}
+
+async function writeFakeSetupTools(binDir: string): Promise<{ gitLog: string; pythonLog: string }> {
+  await fs.mkdir(binDir, { recursive: true });
+  const gitLog = path.join(binDir, "git.log");
+  const pythonLog = path.join(binDir, "python.log");
+
+  await writeExecutable(
+    path.join(binDir, "git"),
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_GIT_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "clone") {
+  const target = args[2];
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(path.join(target, "run_pageindex.py"), "# fake pageindex\\n");
+  fs.writeFileSync(path.join(target, "requirements.txt"), "fake==1\\n");
+  process.exit(0);
+}
+if (args[0] === "-C" && args[2] === "checkout") {
+  process.exit(0);
+}
+process.exit(1);
+`
+  );
+
+  await writeExecutable(
+    path.join(binDir, "python3"),
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_PYTHON_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "-m" && args[1] === "venv") {
+  const venvDir = args[2];
+  const binDir = path.join(venvDir, "bin");
+  const pythonPath = path.join(binDir, "python");
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(
+    pythonPath,
+    "#!/usr/bin/env node\\nconst fs = require(\\"node:fs\\");\\nfs.appendFileSync(process.env.FAKE_PYTHON_LOG, JSON.stringify(process.argv.slice(2)) + \\"\\\\n\\");\\n"
+  );
+  fs.chmodSync(pythonPath, 0o755);
+  process.exit(0);
+}
+process.exit(0);
+`
+  );
+
+  return { gitLog, pythonLog };
+}
+
 async function requestJson(url: string, options: {
   body?: unknown;
   headers?: Record<string, string>;
@@ -905,6 +962,168 @@ test("init CLI writes a ragbox config file", async () => {
   assert.equal(config.llm.model, "gpt-4o-mini");
   assert.equal(config.docs.rootDir, "./content");
   assert.equal(config.docs.outputDir, "./.idx");
+});
+
+test("setup pageindex clones, installs dependencies, updates config, and updates gitignore", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const realTempDir = await fs.realpath(tempDir);
+  const binDir = path.join(tempDir, "bin");
+  const { gitLog, pythonLog } = await writeFakeSetupTools(binDir);
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  const result = spawnSync(process.execPath, [cliPath, "setup", "pageindex", "--ref", "test-ref", "--json"], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      FAKE_GIT_LOG: gitLog,
+      FAKE_PYTHON_LOG: pythonLog,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`
+    }
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  const output = JSON.parse(result.stdout) as {
+    actions: {
+      checkedOutRef?: string;
+      cloned: boolean;
+      installedDependencies: boolean;
+      reusedExisting: boolean;
+      updatedGitignore: boolean;
+      wroteConfig: boolean;
+    };
+    cliPath: string;
+    command: string;
+    configPath: string;
+    pythonPath: string;
+  };
+
+  assert.equal(output.command, "setup pageindex");
+  assert.equal(output.actions.cloned, true);
+  assert.equal(output.actions.reusedExisting, false);
+  assert.equal(output.actions.checkedOutRef, "test-ref");
+  assert.equal(output.actions.installedDependencies, true);
+  assert.equal(output.actions.wroteConfig, true);
+  assert.equal(output.actions.updatedGitignore, true);
+  assert.equal(output.cliPath, path.join(realTempDir, ".ragbox", "PageIndex", "run_pageindex.py"));
+  assert.equal(output.pythonPath, path.join(realTempDir, ".ragbox", "pageindex-venv", "bin", "python"));
+
+  const config = JSON.parse(await fs.readFile(path.join(tempDir, "ragbox.config.json"), "utf8")) as {
+    pageIndex: { cli: string; python: string };
+  };
+  assert.equal(config.pageIndex.cli, "./.ragbox/PageIndex/run_pageindex.py");
+  assert.equal(config.pageIndex.python, "./.ragbox/pageindex-venv/bin/python");
+  assert.match(await fs.readFile(path.join(tempDir, ".gitignore"), "utf8"), /^\.ragbox\/$/m);
+
+  const gitCalls = (await fs.readFile(gitLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as string[]);
+  assert.deepEqual(gitCalls[0], ["clone", "https://github.com/VectifyAI/PageIndex.git", path.join(realTempDir, ".ragbox", "PageIndex")]);
+  assert.deepEqual(gitCalls[1], ["-C", path.join(realTempDir, ".ragbox", "PageIndex"), "checkout", "test-ref"]);
+
+  const pythonCalls = (await fs.readFile(pythonLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as string[]);
+  assert.deepEqual(pythonCalls[0], ["-m", "venv", path.join(realTempDir, ".ragbox", "pageindex-venv")]);
+  assert.deepEqual(pythonCalls[1], [
+    "-m",
+    "pip",
+    "install",
+    "--upgrade",
+    "-r",
+    path.join(realTempDir, ".ragbox", "PageIndex", "requirements.txt")
+  ]);
+
+  const doctor = spawnSync(process.execPath, [cliPath, "doctor", "--json"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+  assert.equal(doctor.status, 0, `STDOUT:\n${doctor.stdout}\nSTDERR:\n${doctor.stderr}`);
+  const doctorOutput = JSON.parse(doctor.stdout) as {
+    checks: Array<{ name: string; ok: boolean; path?: string }>;
+  };
+  const pageIndexCheck = doctorOutput.checks.find((check) => check.name === "pageindex-cli");
+  assert.equal(pageIndexCheck?.ok, true);
+  assert.equal(pageIndexCheck?.path, output.cliPath);
+});
+
+test("setup pageindex reuses an existing checkout and skip-install writes only the cli config", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const pageIndexDir = path.join(tempDir, ".ragbox", "PageIndex");
+  const configPath = path.join(tempDir, "ragbox.config.json");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.mkdir(pageIndexDir, { recursive: true });
+  await fs.writeFile(path.join(pageIndexDir, "run_pageindex.py"), "# existing pageindex\n", "utf8");
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        pageIndex: {
+          concurrency: 2,
+          python: "./old-python"
+        },
+        llm: {
+          baseUrl: "https://example.test/v1",
+          model: "example-model"
+        },
+        docs: {
+          rootDir: "./content",
+          outputDir: "./.idx"
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [cliPath, "setup", "pageindex", "--skip-install", "--json"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  const output = JSON.parse(result.stdout) as {
+    actions: { cloned: boolean; installedDependencies: boolean; reusedExisting: boolean };
+    pythonPath?: string;
+    venvDir?: string;
+  };
+  assert.equal(output.actions.cloned, false);
+  assert.equal(output.actions.reusedExisting, true);
+  assert.equal(output.actions.installedDependencies, false);
+  assert.equal(output.pythonPath, undefined);
+  assert.equal(output.venvDir, undefined);
+  assert.equal(await pathExists(path.join(tempDir, ".ragbox", "pageindex-venv")), false);
+
+  const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+    docs: { outputDir: string; rootDir: string };
+    llm: { baseUrl: string; model: string };
+    pageIndex: { cli: string; concurrency: number; python?: string };
+  };
+  assert.equal(config.pageIndex.cli, "./.ragbox/PageIndex/run_pageindex.py");
+  assert.equal(config.pageIndex.concurrency, 2);
+  assert.equal(config.pageIndex.python, undefined);
+  assert.equal(config.llm.baseUrl, "https://example.test/v1");
+  assert.equal(config.llm.model, "example-model");
+  assert.equal(config.docs.rootDir, "./content");
+  assert.equal(config.docs.outputDir, "./.idx");
+});
+
+test("setup pageindex fails for an invalid existing install directory without deleting it", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const pageIndexDir = path.join(tempDir, ".ragbox", "PageIndex");
+  const markerPath = path.join(pageIndexDir, "README.md");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.mkdir(pageIndexDir, { recursive: true });
+  await fs.writeFile(markerPath, "not pageindex\n", "utf8");
+
+  const result = spawnSync(process.execPath, [cliPath, "setup", "pageindex", "--skip-install", "--json"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 1, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stderr, /run_pageindex\.py was not found/);
+  assert.equal(await fs.readFile(markerPath, "utf8"), "not pageindex\n");
 });
 
 test("index CLI reads ragbox docs config and include/exclude patterns", async () => {

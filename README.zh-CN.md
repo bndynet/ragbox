@@ -12,60 +12,74 @@
 - 通过 HTTP 把文档问答接进内部 backend
 - 在本地、CI 和容器里使用同一套索引/查询流程
 
-## 安装
-
-```bash
-npm install -g @bndynet/ragbox
-```
-
-## 前置条件
-
-你需要准备：
-
-- Node.js 18 或更新版本
-- 一个包含 `.md` 或 `.mdx` 的文档目录
-- 本地 PageIndex Python 脚本，通常是 `run_pageindex.py`
-- 一个兼容 OpenAI `/chat/completions` 的模型服务
-- 模型服务 API key
-
-`ragbox` 不会自动安装 PageIndex。索引前需要把 `PAGEINDEX_CLI` 设置成本地 PageIndex 脚本路径。
-
 ## 快速开始
 
-先索引文档目录，再提问；如果文档会持续变化，可以启动 watch：
+默认路径按“开箱即用”设计：安装 `ragbox`，让它在当前项目里准备 PageIndex，然后直接索引和提问。
 
 ```bash
-export PAGEINDEX_CLI=/path/to/PageIndex/run_pageindex.py
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.openai.com/v1
+# 安装 CLI
+npm install -g @bndynet/ragbox
 
-# 1. 生成本地索引
-ragbox index ./docs --output-dir ./.ragbox-index
-
-# 2. 提问
-ragbox query ./.ragbox-index "怎么配置认证？"
-
-# 3. 可选：文档变化时持续刷新索引
-ragbox watch ./docs --output-dir ./.ragbox-index
+# 克隆 PageIndex 到 ./.ragbox/PageIndex，创建 Python venv，
+# 安装 PageIndex 依赖，并写入 ragbox.config.json
+ragbox setup pageindex
 ```
 
-如果是一个要持续运行的项目，推荐走配置优先流程：
+继续下一步前，先编辑 `ragbox.config.json`：填好模型配置，并把 `docs.rootDir` / `docs.outputDir` 改成你的文档目录和索引目录。
+
+```json
+{
+  "version": 1,
+  "pageIndex": {
+    "cli": "./.ragbox/PageIndex/run_pageindex.py",
+    "python": "./.ragbox/pageindex-venv/bin/python"
+  },
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "apiKey": "sk-..."
+  },
+  "docs": {
+    "rootDir": "./docs",
+    "outputDir": "./.ragbox-index"
+  }
+}
+```
+
+如果有多个文档目录，改用 [项目配置](#项目配置) 里的 `sources` 映射。然后索引和提问：
 
 ```bash
-ragbox init
-# 编辑 ragbox.config.json，填好 docs 路径、PageIndex 路径和模型设置
+# 基于配置里的 docs/source 生成本地索引
+ragbox index
+
+# 提问
+ragbox query "怎么配置认证？"
+
+# 可选：文档变化时持续刷新索引
+ragbox watch --jsonl
+```
+
+如果想用一个前台进程同时负责索引、watch 和 query HTTP API，使用 `start`：
+
+```bash
 ragbox start
 ```
 
-`start` 会贯穿完整本地服务流程：先索引，后续 watch 更新，并同时启动 query HTTP API。
-
-模型服务参数也可以不放环境变量，直接通过命令传入：
+需要临时覆盖配置时，仍然可以显式传路径：
 
 ```bash
+ragbox index ./docs --output-dir ./.ragbox-index
+ragbox query ./.ragbox-index "怎么配置认证？"
+```
+
+如果不想把凭证写进 JSON，同样也支持通过环境变量或命令参数传入模型配置：
+
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_BASE_URL=https://api.openai.com/v1
+
 ragbox index ./docs \
   --output-dir ./.ragbox-index \
-  --api-key sk-... \
-  --base-url https://api.openai.com/v1 \
   --model gpt-4o-mini
 
 ragbox query ./.ragbox-index "怎么配置认证？" \
@@ -74,12 +88,36 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
   --model gpt-4o-mini
 ```
 
+## Setup 做了什么
+
+`ragbox setup pageindex` 会帮你准备本地 PageIndex 依赖：
+
+- 克隆 PageIndex 到 `./.ragbox/PageIndex`
+- 创建 `./.ragbox/pageindex-venv`
+- 安装 PageIndex Python 依赖
+- 把 `pageIndex.cli` 和 `pageIndex.python` 写入 `ragbox.config.json`
+- 把 `.ragbox/` 加入 `.gitignore`
+
+如果你已经有 PageIndex checkout，可以使用 `ragbox setup pageindex --dir ../PageIndex --skip-install`，或手动设置 `PAGEINDEX_CLI`。
+
+## 前置条件
+
+默认 setup 需要：
+
+- Node.js 18 或更新版本
+- Git，用于克隆 PageIndex
+- 带 `venv` 和 `pip` 的 Python 3，用于安装 PageIndex 依赖
+- 一个包含 `.md` 或 `.mdx` 的文档目录
+- 一个兼容 OpenAI `/chat/completions` 的模型服务
+- 模型服务 API key
+
 ## 常见使用方式
 
 | 目标 | 使用方式 |
 | --- | --- |
+| 从零开始 | `npm install -g @bndynet/ragbox`，然后 `ragbox setup pageindex` |
 | 先在一个 docs 目录试用 | `ragbox index ./docs --output-dir ./.ragbox-index`，然后 `ragbox query ./.ragbox-index "..."` |
-| 不想每次重复路径和模型配置 | `ragbox init`，再编辑 `ragbox.config.json` |
+| 不想每次重复路径 | 使用 `ragbox setup pageindex` 写入的 `ragbox.config.json`，或运行 `ragbox init` |
 | 多个文档目录一起查询 | 配置 `sources`，分别跑 `ragbox index --source <name>`，再用 `ragbox query --all-sources "..."` |
 | 调试回答质量 | `ragbox query --trace --json "..."` 或 `ragbox trace query "..."` |
 | 检查索引是否可用 | `ragbox status ./.ragbox-index` |
@@ -90,23 +128,19 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
 
 ## 项目配置
 
-当命令里的路径和模型参数开始变多时，建议创建项目配置：
-
-```bash
-ragbox init
-```
-
-它会写入 `ragbox.config.json`：
+`ragbox setup pageindex` 会为默认本地 setup 创建或更新 `ragbox.config.json`。补上模型凭证后，典型配置如下：
 
 ```json
 {
   "version": 1,
   "pageIndex": {
-    "cli": "/path/to/PageIndex/run_pageindex.py"
+    "cli": "./.ragbox/PageIndex/run_pageindex.py",
+    "python": "./.ragbox/pageindex-venv/bin/python"
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini"
+    "model": "gpt-4o-mini",
+    "apiKey": "sk-..."
   },
   "docs": {
     "rootDir": "./docs",
@@ -115,7 +149,14 @@ ragbox init
 }
 ```
 
-配置文件中的相对路径会按配置文件所在目录解析。命令行参数会覆盖配置文件值。API key 建议放在环境变量或 secret manager，不要写进 `ragbox.config.json`。
+如果你只想创建配置、不安装 PageIndex，也可以运行：
+
+```bash
+ragbox init
+ragbox init --docs-dir ./content --output-dir ./.idx
+```
+
+配置文件中的相对路径会按配置文件所在目录解析。Server 端部署可以把 `baseUrl`、`model` 和 `apiKey` 一起放在私有 `ragbox.config.json`，或按环境拆成 `ragbox.config.prod.json`。如果配置文件会提交到仓库或共享给他人，就不要写真实 `apiKey`，改用环境变量或 secret manager。
 
 只有一个文档源时，用顶层 `docs` 就够了，不需要传 `--source`。项目里确实有多个命名文档源时，再使用可选的 `sources` 映射。
 
@@ -135,11 +176,13 @@ ragbox --config ./ragbox.config.json index
 {
   "version": 1,
   "pageIndex": {
-    "cli": "/path/to/PageIndex/run_pageindex.py"
+    "cli": "./.ragbox/PageIndex/run_pageindex.py",
+    "python": "./.ragbox/pageindex-venv/bin/python"
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini"
+    "model": "gpt-4o-mini",
+    "apiKey": "sk-..."
   },
   "sources": {
     "ragbox": {
@@ -182,11 +225,13 @@ ragbox --config ./ragbox.config.prod.json query "怎么部署？"
 
 ## 配置
 
+Server 端使用时，建议把稳定配置集中写在 `ragbox.config.json`：PageIndex 路径、docs 路径、LLM `baseUrl`、`model`，以及私有配置文件里的 `apiKey`。环境变量和命令参数仍然支持，适合覆盖配置、接 secret manager，或临时运行。
+
 配置解析优先级为：命令行参数、`ragbox.config.json`、环境变量、默认值。
 
 | 配置 | 环境变量 | 命令参数 | 用于 | 默认值 |
 | --- | --- | --- | --- | --- |
-| PageIndex 脚本 | `PAGEINDEX_CLI` | 无 | `index`, `watch` | 索引时必填 |
+| PageIndex 脚本 | `PAGEINDEX_CLI` | `ragbox setup pageindex` 写入配置 | `index`, `watch` | 索引时必填 |
 | Python 可执行文件 | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch` | `python3` |
 | 输出目录 | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch` | `<folder>/.pageindex` |
 | 并发数 | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch` | `1` |
@@ -205,15 +250,28 @@ ragbox --config ./ragbox.config.prod.json query "怎么部署？"
 | Watch health 文件 | `RAGBOX_WATCH_HEALTH_FILE` | `--health-file` | `watch` | 无 |
 | Watch webhook | `RAGBOX_WATCH_WEBHOOK_URL` | `--webhook` | `watch` | 无 |
 
-生产环境建议用环境变量或 secret manager 管理 API key。`--api-key` 适合本地测试，但可能出现在 shell history 或进程列表里。
+私有 server 配置可以把 `llm.apiKey` 写进 JSON，让部署自包含。配置文件会提交、共享或交给平台 secret 管理时，不要在 JSON 里写真实 key，改用 `OPENAI_API_KEY`。`--api-key` 适合本地测试，但可能出现在 shell history 或进程列表里。
 
 ## 命令说明
 
 这一节是命令参考。如果你是第一次使用，建议先看 [快速开始](#快速开始) 和 [常见使用方式](#常见使用方式)。
 
+### `ragbox setup pageindex`
+
+把 PageIndex 克隆到 `./.ragbox/PageIndex`，创建 `./.ragbox/pageindex-venv`，安装 PageIndex Python 依赖，更新 `ragbox.config.json`，并把 `.ragbox/` 加入 `.gitignore`。
+
+```bash
+ragbox setup pageindex
+ragbox setup pageindex --ref v0.1.0
+ragbox setup pageindex --skip-install
+ragbox setup pageindex --dir ../PageIndex --no-write-config
+```
+
+自动化场景可以使用 `--json`。如果项目用其它方式管理本地生成工具，可以使用 `--no-gitignore`。
+
 ### `ragbox init`
 
-创建 `ragbox.config.json` 文件，避免每条命令都重复传 docs 路径、输出目录和模型设置。
+只创建 `ragbox.config.json`，不安装 PageIndex。适合你想手动编辑路径，或自己管理 PageIndex 的场景。
 
 ```bash
 ragbox init
@@ -362,11 +420,11 @@ ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
 
-当你已经通过 `ragbox init` 配好项目，并希望用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`。它会等初始索引完成后再启动 HTTP `serve`，之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
+当你已经通过 `ragbox setup pageindex` 准备好默认本地配置，并希望用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`。它会等初始索引完成后再启动 HTTP `serve`，之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
 
 配置了多个 source 时，`ragbox start` 默认启动全部 source。可以用 `--source ragbox,icharts` 限定范围，也可以用 `--all-sources` 显式表达全局启动。
 
-`start` 不会创建或修改 `ragbox.config.json`；第一次使用仍然先运行 `ragbox init`，再编辑配置文件。
+`start` 不会创建或修改 `ragbox.config.json`；默认本地 setup 先运行 `ragbox setup pageindex`，如果你想自己管理 PageIndex，再用 `ragbox init` 手动配置。
 
 ### `ragbox serve [target]`
 
@@ -499,21 +557,80 @@ ragbox query ./.ragbox-index "..."
 - 长期运行 `watch` 时，优先使用 `--jsonl`、`--lock-file`、`--health-file`、`--retry-attempts` 和 `--staging`
 - 把输出目录放在源码目录外，例如 `/var/lib/ragbox/docs-index`
 - 多副本应用需要读取同一份完整索引，可以挂载只读卷或随部署产物分发
-- API key 放环境变量或 secret manager
+- API key 可以放私有 server 配置、环境变量或 secret manager；不要提交真实 key
 - 当 `serve` 不只绑定 localhost 时，使用 `RAGBOX_SERVE_TOKEN` 或 `--auth-token`
 - 先用 `--concurrency 1`，确认 PageIndex 和模型服务限流后再提高
 - 如果要求零停机更新，可以先索引到 staging 目录，成功后再切换读目录
 
-部署时索引示例：
+私有 server 配置示例：
+
+```json
+{
+  "version": 1,
+  "pageIndex": {
+    "cli": "/opt/PageIndex/run_pageindex.py",
+    "python": "/opt/pageindex-venv/bin/python"
+  },
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "apiKey": "sk-..."
+  },
+  "docs": {
+    "rootDir": "/srv/app/docs",
+    "outputDir": "/var/lib/ragbox/docs-index"
+  }
+}
+```
 
 ```bash
-export PAGEINDEX_CLI=/opt/PageIndex/run_pageindex.py
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.openai.com/v1
-
-ragbox index /srv/app/docs --output-dir /var/lib/ragbox/docs-index --concurrency 2
-ragbox query /var/lib/ragbox/docs-index "怎么配置认证？"
+ragbox --config ./ragbox.config.prod.json index --concurrency 2
+ragbox --config ./ragbox.config.prod.json query "怎么配置认证？"
 ```
+
+### 后台运行
+
+`ragbox start` 有意以前台进程运行。Server 部署时，建议交给进程管理器托管，这样关闭终端、SSH 断开或进程崩溃后都能继续运行或自动重启。
+
+临时测试可以用 `nohup`：
+
+```bash
+nohup ragbox --config ./ragbox.config.prod.json start > ragbox.log 2>&1 &
+```
+
+Linux server 推荐用 `systemd`：
+
+```ini
+[Unit]
+Description=ragbox service
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/ragbox
+ExecStart=/usr/local/bin/ragbox --config ./ragbox.config.prod.json start
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable ragbox
+sudo systemctl start ragbox
+sudo systemctl status ragbox
+```
+
+如果使用 Node 生态，也可以用 `pm2`：
+
+```bash
+pm2 start "ragbox --config ./ragbox.config.prod.json start" --name ragbox
+pm2 save
+pm2 startup
+```
+
+容器部署时，让 `ragbox start` 保持为前台命令，然后使用平台的 restart policy，例如 Docker `--restart unless-stopped` 或 Kubernetes `restartPolicy`。
 
 ## 在 Node.js 中使用 ragbox
 
@@ -633,14 +750,14 @@ const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-
 
 ## 常见问题
 
-- `PAGEINDEX_CLI is required to run PageIndex`：设置 `PAGEINDEX_CLI=/path/to/run_pageindex.py`
-- `OPENAI_API_KEY is required for query`：设置 `OPENAI_API_KEY` 或传 `--api-key`
+- `PAGEINDEX_CLI is required to run PageIndex`：运行 `ragbox setup pageindex`，或设置 `PAGEINDEX_CLI=/path/to/run_pageindex.py`
+- `OPENAI_API_KEY is required for query`：在私有 `ragbox.config.json` 里添加 `llm.apiKey`，或设置 `OPENAI_API_KEY`，也可以临时传 `--api-key`
 - `Expected a docs folder... or a ragbox output directory`：`query` 的第一个参数可以传带 `.pageindex/` 的 docs 目录，也可以直接传索引输出目录
 - `PageIndex completed but no generated JSON result was found`：默认情况下，ragbox 会读取 PageIndex 写到 `results/` 里的 JSON。如果你使用的自定义 wrapper 只支持显式输出路径，把 `PAGEINDEX_OUTPUT_ARG` 或 `pageIndex.outputArg` 设置成它的输出路径参数名。
 
 ## 限制
 
-- 需要你本地已经安装并配置 PageIndex
+- 需要你本地已经安装并配置 PageIndex；`ragbox setup pageindex` 可以准备默认的本地 checkout 和虚拟环境
 - 查询质量依赖 PageIndex JSON 结构和所使用的 LLM
 - 当前基础流程是树结构选择，不是向量检索
 

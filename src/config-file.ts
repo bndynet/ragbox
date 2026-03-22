@@ -63,6 +63,13 @@ export type WriteDefaultRagboxConfigOptions = {
   outputDir?: string;
 };
 
+export type WritePageIndexSetupConfigOptions = {
+  cliPath: string;
+  configPath?: string;
+  cwd?: string;
+  pythonPath?: string;
+};
+
 const DEFAULT_INCLUDE = ["**/*.md", "**/*.mdx"];
 const DEFAULT_EXCLUDE = ["node_modules/**", ".git/**", ".pageindex/**", "dist/**", "build/**"];
 
@@ -125,6 +132,19 @@ function resolveConfigCommandPath(configDir: string, value: string | undefined):
     return path.resolve(configDir, value);
   }
   return value;
+}
+
+function normalizeConfigRelativePath(value: string): string {
+  return value.split(path.sep).join("/");
+}
+
+function toConfigRelativeCommandPath(configDir: string, cwd: string, value: string): string {
+  const absolutePath = path.isAbsolute(value) ? value : path.resolve(cwd, value);
+  const relativePath = normalizeConfigRelativePath(path.relative(configDir, absolutePath));
+  if (!relativePath || relativePath.startsWith("..")) {
+    return normalizeConfigRelativePath(absolutePath);
+  }
+  return relativePath.startsWith("./") ? relativePath : `./${relativePath}`;
 }
 
 function mergePageIndexConfig(...configs: Array<RagboxPageIndexConfig | undefined>): RagboxPageIndexConfig {
@@ -240,6 +260,35 @@ export async function writeDefaultRagboxConfig(options: WriteDefaultRagboxConfig
     `${JSON.stringify(createDefaultRagboxConfig({ docsDir: options.docsDir, outputDir: options.outputDir }), null, 2)}\n`,
     "utf8"
   );
+  return configPath;
+}
+
+export async function writePageIndexSetupConfig(options: WritePageIndexSetupConfigOptions): Promise<string> {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const configPath = (await resolveConfigPath(options.configPath, cwd)) ?? (await findConfigPath(cwd)) ?? path.resolve(cwd, RAGBOX_CONFIG_FILE);
+  const configDir = path.dirname(configPath);
+  let config = createDefaultRagboxConfig();
+
+  if (await pathExists(configPath)) {
+    config = JSON.parse(await fs.readFile(configPath, "utf8")) as RagboxConfig;
+    if (config.version !== 1) {
+      throw new Error(`Unsupported ragbox config version in ${configPath}: ${String(config.version)}`);
+    }
+  }
+
+  const pageIndex: RagboxPageIndexConfig = {
+    ...(config.pageIndex ?? {}),
+    cli: toConfigRelativeCommandPath(configDir, cwd, options.cliPath)
+  };
+  if (options.pythonPath) {
+    pageIndex.python = toConfigRelativeCommandPath(configDir, cwd, options.pythonPath);
+  } else {
+    delete pageIndex.python;
+  }
+
+  config.pageIndex = pageIndex;
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   return configPath;
 }
 

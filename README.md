@@ -14,60 +14,74 @@ Use `ragbox` when you want to:
 
 [中文文档](./README.zh-CN.md)
 
-## Install
-
-```bash
-npm install -g @bndynet/ragbox
-```
-
-## Requirements
-
-You need:
-
-- Node.js 18 or newer
-- a docs folder containing `.md` or `.mdx` files
-- a local PageIndex Python script, usually `run_pageindex.py`
-- an OpenAI-compatible `/chat/completions` endpoint
-- an API key for that endpoint
-
-`ragbox` does not install PageIndex for you. Set `PAGEINDEX_CLI` to your local PageIndex script before indexing.
-
 ## Quick Start
 
-Index a docs folder, ask a question, then optionally keep the index updated:
+The default path is meant to work out of the box: install `ragbox`, let it prepare PageIndex locally, then index and query your docs.
 
 ```bash
-export PAGEINDEX_CLI=/path/to/PageIndex/run_pageindex.py
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.openai.com/v1
+# Install the CLI.
+npm install -g @bndynet/ragbox
 
-# 1. Build the local index.
-ragbox index ./docs --output-dir ./.ragbox-index
-
-# 2. Ask a question.
-ragbox query ./.ragbox-index "How do I configure authentication?"
-
-# 3. Optional: keep the index fresh while docs change.
-ragbox watch ./docs --output-dir ./.ragbox-index
+# Clone PageIndex into ./.ragbox/PageIndex, create a Python venv,
+# install PageIndex dependencies, and write ragbox.config.json.
+ragbox setup pageindex
 ```
 
-For a project you want to keep running, use the config-first flow:
+Before continuing, edit `ragbox.config.json`: add your model settings and point `docs.rootDir` / `docs.outputDir` at your documentation and index locations.
+
+```json
+{
+  "version": 1,
+  "pageIndex": {
+    "cli": "./.ragbox/PageIndex/run_pageindex.py",
+    "python": "./.ragbox/pageindex-venv/bin/python"
+  },
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "apiKey": "sk-..."
+  },
+  "docs": {
+    "rootDir": "./docs",
+    "outputDir": "./.ragbox-index"
+  }
+}
+```
+
+If you have more than one docs folder, use the `sources` map described in [Project Config](#project-config). Then index and query:
 
 ```bash
-ragbox init
-# Edit ragbox.config.json with your docs path, PageIndex path, and model settings.
+# Build the local index from the configured docs/source.
+ragbox index
+
+# Ask a question.
+ragbox query "How do I configure authentication?"
+
+# Optional: keep the index fresh while docs change.
+ragbox watch --jsonl
+```
+
+Use `start` when you want one foreground process for indexing, watching, and serving the query API:
+
+```bash
 ragbox start
 ```
 
-`start` does the full local service loop: initial index, watch for updates, and serve the query API.
-
-You can pass the model settings as flags instead of environment variables:
+You can still pass explicit paths when you want to override the config for one command:
 
 ```bash
+ragbox index ./docs --output-dir ./.ragbox-index
+ragbox query ./.ragbox-index "How do I configure authentication?"
+```
+
+If you do not want to store credentials in JSON, the same model settings can be supplied with environment variables or flags:
+
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_BASE_URL=https://api.openai.com/v1
+
 ragbox index ./docs \
   --output-dir ./.ragbox-index \
-  --api-key sk-... \
-  --base-url https://api.openai.com/v1 \
   --model gpt-4o-mini
 
 ragbox query ./.ragbox-index "How do I configure authentication?" \
@@ -76,12 +90,36 @@ ragbox query ./.ragbox-index "How do I configure authentication?" \
   --model gpt-4o-mini
 ```
 
+## What Setup Does
+
+`ragbox setup pageindex` prepares the local PageIndex dependency for you:
+
+- clones PageIndex into `./.ragbox/PageIndex`
+- creates `./.ragbox/pageindex-venv`
+- installs PageIndex Python dependencies
+- writes `pageIndex.cli` and `pageIndex.python` into `ragbox.config.json`
+- adds `.ragbox/` to `.gitignore`
+
+If you already have a PageIndex checkout, use `ragbox setup pageindex --dir ../PageIndex --skip-install`, or set `PAGEINDEX_CLI` manually.
+
+## Requirements
+
+The default setup needs:
+
+- Node.js 18 or newer
+- Git, for cloning PageIndex
+- Python 3 with `venv` and `pip`, for PageIndex dependencies
+- a docs folder containing `.md` or `.mdx` files
+- an OpenAI-compatible `/chat/completions` endpoint
+- an API key for that endpoint
+
 ## Common Workflows
 
 | Goal | Use |
 | --- | --- |
+| Start from nothing | `npm install -g @bndynet/ragbox`, then `ragbox setup pageindex` |
 | Try ragbox on one docs folder | `ragbox index ./docs --output-dir ./.ragbox-index`, then `ragbox query ./.ragbox-index "..."` |
-| Avoid repeating paths and model settings | `ragbox init`, then edit `ragbox.config.json` |
+| Avoid repeating paths | use the `ragbox.config.json` written by `ragbox setup pageindex`, or run `ragbox init` |
 | Query several docs folders together | Configure `sources`, run `ragbox index --source <name>`, then `ragbox query --all-sources "..."` |
 | Debug answer quality | `ragbox query --trace --json "..."` or `ragbox trace query "..."` |
 | Check whether an index is usable | `ragbox status ./.ragbox-index` |
@@ -92,23 +130,19 @@ ragbox query ./.ragbox-index "How do I configure authentication?" \
 
 ## Project Config
 
-Once the commands get repetitive, create a project config:
-
-```bash
-ragbox init
-```
-
-This writes `ragbox.config.json`:
+`ragbox setup pageindex` creates or updates `ragbox.config.json` for the default local setup. After adding your model credentials, a typical config looks like this:
 
 ```json
 {
   "version": 1,
   "pageIndex": {
-    "cli": "/path/to/PageIndex/run_pageindex.py"
+    "cli": "./.ragbox/PageIndex/run_pageindex.py",
+    "python": "./.ragbox/pageindex-venv/bin/python"
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini"
+    "model": "gpt-4o-mini",
+    "apiKey": "sk-..."
   },
   "docs": {
     "rootDir": "./docs",
@@ -117,7 +151,14 @@ This writes `ragbox.config.json`:
 }
 ```
 
-Relative paths are resolved from the config file directory. CLI flags override config values. Keep API keys in environment variables or your secret manager instead of `ragbox.config.json`.
+You can also create a config without installing PageIndex:
+
+```bash
+ragbox init
+ragbox init --docs-dir ./content --output-dir ./.idx
+```
+
+Relative paths are resolved from the config file directory. Server-side deployments can keep `baseUrl`, `model`, and `apiKey` together in a private `ragbox.config.json` or environment-specific config such as `ragbox.config.prod.json`. If a config file is committed or shared, keep `apiKey` in environment variables or a secret manager instead.
 
 For one documentation source, use the top-level `docs` object. No `--source` flag is needed. If a project needs multiple named sources, use the optional `sources` map.
 
@@ -137,11 +178,13 @@ For multiple documentation directories, name each one under `sources`. This is u
 {
   "version": 1,
   "pageIndex": {
-    "cli": "/path/to/PageIndex/run_pageindex.py"
+    "cli": "./.ragbox/PageIndex/run_pageindex.py",
+    "python": "./.ragbox/pageindex-venv/bin/python"
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini"
+    "model": "gpt-4o-mini",
+    "apiKey": "sk-..."
   },
   "sources": {
     "ragbox": {
@@ -184,11 +227,13 @@ ragbox --config ./ragbox.config.prod.json query "How do I deploy?"
 
 ## Configuration
 
+For server-side use, keep the stable settings in `ragbox.config.json`: PageIndex paths, docs paths, LLM `baseUrl`, `model`, and, when the file is private, `apiKey`. Environment variables and CLI flags are still supported for overrides, secret managers, and one-off runs.
+
 Resolution order is command-line flags, then `ragbox.config.json`, then environment variables, then defaults.
 
 | Setting | Env | CLI flag | Used by | Default |
 | --- | --- | --- | --- | --- |
-| PageIndex script | `PAGEINDEX_CLI` | none | `index`, `watch` | required when indexing |
+| PageIndex script | `PAGEINDEX_CLI` | `ragbox setup pageindex` writes config | `index`, `watch` | required when indexing |
 | Python executable | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch` | `python3` |
 | Output directory | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch` | `<folder>/.pageindex` |
 | Concurrency | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch` | `1` |
@@ -207,15 +252,28 @@ Resolution order is command-line flags, then `ragbox.config.json`, then environm
 | Watch health file | `RAGBOX_WATCH_HEALTH_FILE` | `--health-file` | `watch` | none |
 | Watch webhook | `RAGBOX_WATCH_WEBHOOK_URL` | `--webhook` | `watch` | none |
 
-For production, prefer environment variables or a secret manager for API keys. Passing `--api-key` is useful for local testing, but command-line secrets can appear in shell history and process listings.
+For private server config, putting `llm.apiKey` in JSON keeps the deployment self-contained. For shared repositories, containers, or managed secret stores, leave `apiKey` out of JSON and provide `OPENAI_API_KEY` at runtime. Passing `--api-key` is useful for local testing, but command-line secrets can appear in shell history and process listings.
 
 ## Commands
 
 Use this section as a command reference. If you are new to `ragbox`, start with [Quick Start](#quick-start) and [Common Workflows](#common-workflows).
 
+### `ragbox setup pageindex`
+
+Clones PageIndex into `./.ragbox/PageIndex`, creates `./.ragbox/pageindex-venv`, installs PageIndex Python dependencies, updates `ragbox.config.json`, and adds `.ragbox/` to `.gitignore`.
+
+```bash
+ragbox setup pageindex
+ragbox setup pageindex --ref v0.1.0
+ragbox setup pageindex --skip-install
+ragbox setup pageindex --dir ../PageIndex --no-write-config
+```
+
+Use `--json` for automation. Use `--no-gitignore` if your project manages generated local tooling another way.
+
 ### `ragbox init`
 
-Creates a `ragbox.config.json` file so you do not need to repeat docs paths, output paths, and model settings in every command.
+Creates a `ragbox.config.json` file without installing PageIndex. Use this when you want to hand-edit paths or manage PageIndex yourself.
 
 ```bash
 ragbox init
@@ -357,11 +415,11 @@ ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
 
-Use `start` after `ragbox init` when you want one foreground process for local development, an internal service, or a container. It waits for the initial index run before starting HTTP `serve`, then reloads the serve index snapshot after successful watch updates.
+Use `start` after `ragbox setup pageindex` when you want one foreground process for local development, an internal service, or a container. It waits for the initial index run before starting HTTP `serve`, then reloads the serve index snapshot after successful watch updates.
 
 With multiple configured sources, `ragbox start` starts all sources by default. Use `--source ragbox,icharts` to limit the running sources, or `--all-sources` to make the global behavior explicit.
 
-`start` does not create or edit `ragbox.config.json`; run `ragbox init` first, then edit the config before starting.
+`start` does not create or edit `ragbox.config.json`; run `ragbox setup pageindex` for the default local setup, or `ragbox init` when you want to manage PageIndex yourself.
 
 ### `ragbox serve [target]`
 
@@ -491,20 +549,79 @@ Common patterns:
 - For long-running watch, prefer `--jsonl`, `--lock-file`, `--health-file`, `--retry-attempts`, and `--staging`.
 - Store the output directory outside the source tree, for example `/var/lib/ragbox/docs-index`.
 - Mount or copy the completed output directory to every app replica that needs querying.
-- Keep API keys in environment variables or your secret manager.
+- Keep API keys in a private server config, environment variables, or your secret manager. Do not commit real keys.
 - Use `RAGBOX_SERVE_TOKEN` or `--auth-token` when `serve` is reachable beyond localhost.
 - Start with `--concurrency 1`; raise it only after checking PageIndex and API rate limits.
 
-Example deploy-time indexing:
+Example private server config:
+
+```json
+{
+  "version": 1,
+  "pageIndex": {
+    "cli": "/opt/PageIndex/run_pageindex.py",
+    "python": "/opt/pageindex-venv/bin/python"
+  },
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "apiKey": "sk-..."
+  },
+  "docs": {
+    "rootDir": "/srv/app/docs",
+    "outputDir": "/var/lib/ragbox/docs-index"
+  }
+}
+```
 
 ```bash
-export PAGEINDEX_CLI=/opt/PageIndex/run_pageindex.py
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.openai.com/v1
-
-ragbox index /srv/app/docs --output-dir /var/lib/ragbox/docs-index --concurrency 2
-ragbox query /var/lib/ragbox/docs-index "How do I configure authentication?"
+ragbox --config ./ragbox.config.prod.json index --concurrency 2
+ragbox --config ./ragbox.config.prod.json query "How do I configure authentication?"
 ```
+
+### Run In The Background
+
+`ragbox start` intentionally runs in the foreground. For a server, run it under a process supervisor so it survives terminal closes, SSH disconnects, and crashes.
+
+For quick testing, `nohup` is enough:
+
+```bash
+nohup ragbox --config ./ragbox.config.prod.json start > ragbox.log 2>&1 &
+```
+
+For Linux servers, prefer `systemd`:
+
+```ini
+[Unit]
+Description=ragbox service
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/ragbox
+ExecStart=/usr/local/bin/ragbox --config ./ragbox.config.prod.json start
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable ragbox
+sudo systemctl start ragbox
+sudo systemctl status ragbox
+```
+
+Node-oriented deployments can use `pm2`:
+
+```bash
+pm2 start "ragbox --config ./ragbox.config.prod.json start" --name ragbox
+pm2 save
+pm2 startup
+```
+
+Containers should keep `ragbox start` as the foreground command and use the platform restart policy, such as Docker `--restart unless-stopped` or Kubernetes `restartPolicy`.
 
 ## Use ragbox from Node.js
 
@@ -624,14 +741,14 @@ The two approaches can also be combined: use vector search for broad candidate r
 
 ## Troubleshooting
 
-- `PAGEINDEX_CLI is required to run PageIndex`: set `PAGEINDEX_CLI=/path/to/run_pageindex.py`.
-- `OPENAI_API_KEY is required for query`: set `OPENAI_API_KEY` or pass `--api-key`.
+- `PAGEINDEX_CLI is required to run PageIndex`: run `ragbox setup pageindex`, or set `PAGEINDEX_CLI=/path/to/run_pageindex.py`.
+- `OPENAI_API_KEY is required for query`: add `llm.apiKey` to a private `ragbox.config.json`, set `OPENAI_API_KEY`, or pass `--api-key`.
 - `Expected a docs folder... or a ragbox output directory`: pass either the docs folder with `.pageindex/`, or the output directory itself.
 - `PageIndex completed but no generated JSON result was found`: by default, ragbox reads the JSON that PageIndex writes into `results/`. If you use a custom wrapper that only writes to an explicit output path, set `PAGEINDEX_OUTPUT_ARG` or `pageIndex.outputArg` to its output-path flag.
 
 ## Limitations
 
-- PageIndex must already be installed/configured locally.
+- PageIndex must be installed/configured locally; `ragbox setup pageindex` can prepare the default local checkout and virtual environment.
 - Query quality depends on PageIndex JSON shape and the configured LLM.
 - The basic flow uses tree selection, not vector search.
 

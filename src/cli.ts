@@ -11,6 +11,7 @@ import { queryFolder } from "./folder-index/query";
 import { startWatchFolder, watchFolder, WatchFolderHandle } from "./folder-index/watch";
 import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions, WatchProgressEvent } from "./folder-index/types";
 import { startServe, ServeHandle } from "./serve";
+import { setupPageIndex, SetupPageIndexResult } from "./setup-pageindex";
 import { inspectIndex, validateIndex, InspectIndexResult, ValidateIndexResult } from "./sdk";
 
 function parseConcurrency(value: string): number {
@@ -133,6 +134,17 @@ type InitCommandOptions = {
   force?: boolean;
   output?: string;
   outputDir?: string;
+};
+
+type SetupPageIndexCommandOptions = {
+  dir?: string;
+  gitignore?: boolean;
+  json?: boolean;
+  python?: string;
+  ref?: string;
+  repo?: string;
+  skipInstall?: boolean;
+  writeConfig?: boolean;
 };
 
 type IndexJsonOutput = {
@@ -295,6 +307,20 @@ function printIndexResult(folder: string, result: IndexFolderResult): void {
     if (failure.error) {
       console.error(indentMultiline(failure.error, "  "));
     }
+  }
+}
+
+function printSetupPageIndexResult(result: SetupPageIndexResult): void {
+  console.log(`PageIndex ready: ${result.pageIndexDir}`);
+  console.log(`cli=${result.cliPath}`);
+  if (result.pythonPath) {
+    console.log(`python=${result.pythonPath}`);
+  }
+  if (result.configPath) {
+    console.log(`config=${result.configPath}`);
+  }
+  if (result.gitignorePath) {
+    console.log(`${result.actions.updatedGitignore ? "updated" : "checked"} gitignore=${result.gitignorePath}`);
   }
 }
 
@@ -1004,6 +1030,40 @@ async function main(): Promise<void> {
         outputDir: commandOptions.outputDir
       });
       console.log(`Created ${configPath}`);
+    });
+
+  const setupCommand = program
+    .command("setup")
+    .description("setup local ragbox dependencies");
+
+  setupCommand
+    .command("pageindex")
+    .description("clone PageIndex and configure ragbox to use it")
+    .option("--dir <folder>", "PageIndex checkout directory", "./.ragbox/PageIndex")
+    .option("--repo <url>", "PageIndex git repository", "https://github.com/VectifyAI/PageIndex.git")
+    .option("--ref <ref>", "PageIndex branch, tag, or commit to checkout")
+    .option("--python <path>", "Python executable used to create the PageIndex virtual environment", "python3")
+    .option("--skip-install", "skip virtual environment creation and pip install")
+    .option("--no-write-config", "do not create or update ragbox.config.json")
+    .option("--no-gitignore", "do not add .ragbox/ to .gitignore")
+    .option("--json", "print a stable JSON result")
+    .action(async (commandOptions: SetupPageIndexCommandOptions, command: Command) => {
+      const globalOptions = getGlobalOptions(command);
+      const result = await setupPageIndex({
+        configPath: globalOptions.config,
+        dir: commandOptions.dir,
+        gitignore: commandOptions.gitignore !== false,
+        install: !commandOptions.skipInstall,
+        python: commandOptions.python,
+        ref: commandOptions.ref,
+        repo: commandOptions.repo,
+        writeConfig: commandOptions.writeConfig !== false
+      });
+      if (commandOptions.json) {
+        writeJson(result);
+        return;
+      }
+      printSetupPageIndexResult(result);
     });
 
   addProjectOptions(
