@@ -72,6 +72,8 @@ export type WritePageIndexSetupConfigOptions = {
 
 const DEFAULT_INCLUDE = ["**/*.md", "**/*.mdx"];
 const DEFAULT_EXCLUDE = ["node_modules/**", ".git/**", ".pageindex/**", "dist/**", "build/**"];
+const DEFAULT_API_KEY_PLACEHOLDER = "YOUR_OPENAI_API_KEY";
+const API_KEY_PLACEHOLDERS = new Set([DEFAULT_API_KEY_PLACEHOLDER, "sk-..."]);
 
 async function pathExists(filePath: string): Promise<boolean> {
   try {
@@ -173,8 +175,10 @@ function pageIndexConfigToOptions(
 }
 
 function llmConfigToOptions(config: RagboxLlmConfig): Pick<PageIndexOptions, "apiKey" | "baseUrl" | "model"> {
+  const apiKey = config.apiKey?.trim();
+
   return {
-    apiKey: config.apiKey,
+    apiKey: apiKey && !API_KEY_PLACEHOLDERS.has(apiKey) ? config.apiKey : undefined,
     baseUrl: config.baseUrl,
     model: config.model
   };
@@ -199,7 +203,8 @@ export function createDefaultRagboxConfig(options: Pick<WriteDefaultRagboxConfig
     },
     llm: {
       baseUrl: "https://api.openai.com/v1",
-      model: "gpt-4o-mini"
+      model: "gpt-4o-mini",
+      apiKey: DEFAULT_API_KEY_PLACEHOLDER
     },
     docs: {
       rootDir: docsDir,

@@ -84,6 +84,36 @@ function logProgress(event: IndexProgressEvent): void {
   }
 }
 
+function firstLine(value: string): string {
+  return value.split(/\r?\n/, 1)[0] ?? value;
+}
+
+function printIndexProgress(event: IndexProgressEvent): void {
+  switch (event.type) {
+    case "scan":
+      console.error(
+        `[ragbox] scan complete output=${event.outputDir} total=${event.total} toIndex=${event.toIndex} unchanged=${event.unchanged} deleted=${event.deleted}`
+      );
+      break;
+    case "index-start":
+      console.error(`[ragbox] indexing ${event.index}/${event.total} ${event.path}`);
+      break;
+    case "index-done":
+      console.error(`[ragbox] indexed ${event.index}/${event.total} ${event.path}`);
+      if (event.summary) {
+        console.error(`[ragbox] summary ${event.path}: ${event.summary}`);
+      }
+      break;
+    case "index-failed":
+      console.error(`[ragbox] failed ${event.index}/${event.total} ${event.path}: ${firstLine(event.error)}`);
+      break;
+    case "write":
+      console.error(`[ragbox] wrote manifest=${event.manifestPath}`);
+      console.error(`[ragbox] wrote rootTree=${event.rootTreePath}`);
+      break;
+  }
+}
+
 type SharedCommandOptions = {
   apiKey?: string;
   baseUrl?: string;
@@ -1081,7 +1111,13 @@ async function main(): Promise<void> {
     .action(async (folder: string | undefined, commandOptions: IndexCommandOptions, command: Command) => {
       const loaded = await loadCommandConfig(command, commandOptions);
       const indexFolderPath = requireFolder(folder ?? loaded.rootDir, "index");
-      const result = await indexFolder(indexFolderPath, buildOptions(loaded.options, commandOptions));
+      if (!commandOptions.json) {
+        console.error(`[ragbox] indexing ${indexFolderPath}`);
+      }
+      const result = await indexFolder(
+        indexFolderPath,
+        buildOptions(loaded.options, commandOptions, commandOptions.json ? logProgress : printIndexProgress)
+      );
       if (commandOptions.json) {
         writeJson(indexJsonOutput(result));
         return;

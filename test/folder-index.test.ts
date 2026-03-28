@@ -8,6 +8,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import * as ragbox from "../src/index";
 import type { LlmChatRequest, LlmClient } from "../src/index";
+import { resolveRagboxConfig } from "../src/config-file";
 import { loadPageIndexConfig } from "../src/folder-index/config";
 import { hashFile } from "../src/folder-index/hash";
 import { chatCompletionsUrl } from "../src/folder-index/llm-client";
@@ -776,6 +777,9 @@ fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), J
   );
 
   assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stderr, /\[ragbox\] indexing /);
+  assert.match(result.stderr, /\[ragbox\] scan complete /);
+  assert.match(result.stderr, /\[ragbox\] indexed 1\/1 guide\.md/);
   assert.match(result.stdout, /ready=1/);
   assert.match(result.stdout, /failed=0/);
 });
@@ -954,14 +958,25 @@ test("init CLI writes a ragbox config file", async () => {
   const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
     version: number;
     docs: { rootDir: string; outputDir: string };
-    llm: { baseUrl: string; model: string };
+    llm: { apiKey: string; baseUrl: string; model: string };
   };
 
   assert.equal(config.version, 1);
   assert.equal(config.llm.baseUrl, "https://api.openai.com/v1");
   assert.equal(config.llm.model, "gpt-4o-mini");
+  assert.equal(config.llm.apiKey, "YOUR_OPENAI_API_KEY");
   assert.equal(config.docs.rootDir, "./content");
   assert.equal(config.docs.outputDir, "./.idx");
+
+  const resolved = await resolveRagboxConfig({ configPath });
+  const runtimeConfig = loadPageIndexConfig({
+    ...resolved.pageIndexOptions,
+    env: {
+      OPENAI_API_KEY: "env-key"
+    }
+  });
+  assert.equal(resolved.pageIndexOptions.apiKey, undefined);
+  assert.equal(runtimeConfig.apiKey, "env-key");
 });
 
 test("setup pageindex clones, installs dependencies, updates config, and updates gitignore", async () => {
