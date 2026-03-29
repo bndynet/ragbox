@@ -251,6 +251,25 @@ async function buildIndexes(targets: ServeResolvedTarget[]): Promise<ServeIndexe
   };
 }
 
+async function assertTargetsReadyForQuery(targets: ServeResolvedTarget[]): Promise<void> {
+  const notReady: string[] = [];
+
+  for (const target of targets) {
+    const validation = await validateIndex(target.target);
+    if (validation.ok) {
+      continue;
+    }
+
+    const label = target.source ? `${target.source} (${target.target})` : target.target;
+    const firstError = validation.errors[0]?.message ?? "index is not query-ready";
+    notReady.push(`${label}: ${firstError}`);
+  }
+
+  if (notReady.length > 0) {
+    throw new ServeHttpError(503, "index_not_ready", `Index is not ready: ${notReady.join("; ")}`);
+  }
+}
+
 function healthFromIndexes(startedAt: number, lastReloadAt: string, indexes: ServeIndexesResult): ServeHealthResult {
   const ready = indexes.indexes.filter((index) => index.ok).length;
   const failed = indexes.indexes.length - ready;
@@ -564,6 +583,7 @@ export async function startServe(options: ServeOptions = {}): Promise<ServeHandl
               ...resolvedTarget,
               options: queryOptionsFromServeOptions(resolvedTarget.options, serverOptions, trace)
             }));
+        await assertTargetsReadyForQuery(targets);
         writeJson(response, 200, await queryTargets(targets, question, serverOptions));
         return;
       }

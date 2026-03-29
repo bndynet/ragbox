@@ -986,12 +986,6 @@ async function runStartAction(
       watchHandles.push(handle);
     }
 
-    const readyResults = await Promise.all(watchHandles.map((handle) => handle.ready));
-    const failedReady = readyResults.find((ready) => !ready.ok);
-    if (failedReady && !failedReady.ok) {
-      throw new Error(`Initial index failed: ${failedReady.error}`);
-    }
-
     const sourceNames = targets.map((target) => target.source).filter((source): source is string => Boolean(source));
     const singleTarget = targets.length === 1 ? targets[0] : undefined;
     serveHandle = await startServe({
@@ -1016,6 +1010,14 @@ async function runStartAction(
     } else {
       console.log(`Serving ragbox at ${serveHandle.url}`);
     }
+
+    const readyResults = await Promise.all(watchHandles.map((handle) => handle.ready));
+    const failedReady = readyResults.find((ready) => !ready.ok);
+    if (failedReady && !failedReady.ok) {
+      throw new Error(`Initial index failed: ${failedReady.error}`);
+    }
+
+    await reloadServe();
 
     await new Promise<void>((resolve) => {
       let closing = false;

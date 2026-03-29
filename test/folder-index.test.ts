@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -159,6 +159,56 @@ async function requestJson(url: string, options: {
       request.write(body);
     }
     request.end();
+  });
+}
+
+function waitForProcessOutput(child: ChildProcessWithoutNullStreams, pattern: RegExp, timeoutMs = 5000): Promise<RegExpMatchArray> {
+  let output = "";
+
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      child.stdout.off("data", onData);
+      child.stderr.off("data", onData);
+      child.off("exit", onExit);
+    };
+    const onData = (chunk: Buffer): void => {
+      output += chunk.toString("utf8");
+      const match = output.match(pattern);
+      if (match) {
+        cleanup();
+        resolve(match);
+      }
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      cleanup();
+      reject(new Error(`Process exited before matching ${pattern}: code=${String(code)} signal=${String(signal)}\n${output}`));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for ${pattern}\n${output}`));
+    }, timeoutMs);
+
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.once("exit", onExit);
+  });
+}
+
+async function stopChildProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, 2000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    child.kill("SIGTERM");
   });
 }
 
@@ -1503,6 +1553,33 @@ test("serve exposes health, indexes, and optional bearer auth", async () => {
   }
 });
 
+test("serve reports index_not_ready for missing query indexes", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const target = path.join(tempDir, ".ragbox-index");
+  const handle = await ragbox.startServe({
+    port: 0,
+    target
+  });
+
+  try {
+    const health = await requestJson(`${handle.url}/health`);
+    assert.equal(health.status, 503);
+    assert.equal((health.body as { ok: boolean; status: string }).ok, false);
+    assert.equal((health.body as { ok: boolean; status: string }).status, "error");
+
+    const query = await requestJson(`${handle.url}/query`, {
+      method: "POST",
+      body: {
+        question: "Is anything ready?"
+      }
+    });
+    assert.equal(query.status, 503);
+    assert.equal((query.body as { error: { code: string } }).error.code, "index_not_ready");
+  } finally {
+    await handle.close();
+  }
+});
+
 test("serve query endpoint returns QueryResult and supports trace", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
   const fixture = await writeValidIndexFixture(tempDir);
@@ -1766,6 +1843,81 @@ test("start CLI help lists watch and serve options", () => {
   assert.match(result.stdout, /--jsonl/);
   assert.match(result.stdout, /--staging/);
   assert.match(result.stdout, /--all-sources/);
+});
+
+test("start CLI serves health while the initial index is still running", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "slow-pageindex.cjs");
+  const releasePath = path.join(tempDir, "release-index");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await fs.writeFile(
+    scriptPath,
+    `const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const outputIndex = args.indexOf("--output");
+const outputPath = outputIndex === -1 ? undefined : args[outputIndex + 1];
+while (!fs.existsSync(${JSON.stringify(releasePath)})) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+}
+if (!outputPath) {
+  fs.mkdirSync("results", { recursive: true });
+}
+fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), JSON.stringify({
+  node_id: "root",
+  summary: "slow ok",
+  nodes: [{ node_id: "n1", title: "Body", text: "Body text" }]
+}));
+`,
+    "utf8"
+  );
+
+  const child = spawn(
+    process.execPath,
+    [
+      cliPath,
+      "start",
+      docsDir,
+      "--output-dir",
+      outputDir,
+      "--pageindex-cli",
+      scriptPath,
+      "--pageindex-python",
+      process.execPath,
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "0"
+    ],
+    {
+      cwd: tempDir
+    }
+  );
+
+  try {
+    const serving = await waitForProcessOutput(child, /Serving ragbox at (http:\/\/127\.0\.0\.1:\d+)/);
+    const url = serving[1];
+    assert.equal(await pathExists(path.join(outputDir, "manifest.json")), false);
+
+    const indexingHealth = await requestJson(`${url}/health`);
+    assert.equal(indexingHealth.status, 503);
+    assert.equal((indexingHealth.body as { ok: boolean; status: string }).ok, false);
+
+    await fs.writeFile(releasePath, "go", "utf8");
+    await waitForProcessOutput(child, /Reloaded serve index snapshot \(1\/1 ready\)/);
+
+    const readyHealth = await requestJson(`${url}/health`);
+    assert.equal(readyHealth.status, 200);
+    assert.equal((readyHealth.body as { ok: boolean; status: string }).status, "ready");
+  } finally {
+    await fs.writeFile(releasePath, "go", "utf8").catch(() => undefined);
+    await stopChildProcess(child);
+  }
 });
 
 test("custom output dir resolves manifest and document index paths", () => {

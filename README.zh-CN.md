@@ -409,7 +409,7 @@ indexes/
 
 ### `ragbox start [folder]`
 
-运行完整本地服务流程：先生成初始索引，再持续 watch 文档变化，同时启动 HTTP query API。
+运行完整本地服务流程：启动 watch、提供 HTTP query API，并持续刷新索引。
 
 ```bash
 ragbox start
@@ -420,7 +420,7 @@ ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
 
-当你已经通过 `ragbox setup pageindex` 准备好默认本地配置，并希望用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`。它会等初始索引完成后再启动 HTTP `serve`，之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
+当你已经通过 `ragbox setup pageindex` 准备好默认本地配置，并希望用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`。HTTP `serve` 会在 watcher 注册后立即启动，所以初始索引还在运行时，`/` 和 `/health` 已经可以响应。`/health` 在首个索引快照可查询前返回 503；初始索引完成后，以及之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
 
 配置了多个 source 时，`ragbox start` 默认启动全部 source。可以用 `--source ragbox,icharts` 限定范围，也可以用 `--all-sources` 显式表达全局启动。
 

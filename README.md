@@ -404,7 +404,7 @@ Fatal query errors include the stage that failed, for example `Query failed duri
 
 ### `ragbox start [folder]`
 
-Runs the complete local service loop: index first, watch for future changes, and serve the HTTP query API.
+Runs the complete local service loop: start watch, serve the HTTP query API, and keep indexes fresh.
 
 ```bash
 ragbox start
@@ -415,7 +415,7 @@ ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
 
-Use `start` after `ragbox setup pageindex` when you want one foreground process for local development, an internal service, or a container. It waits for the initial index run before starting HTTP `serve`, then reloads the serve index snapshot after successful watch updates.
+Use `start` after `ragbox setup pageindex` when you want one foreground process for local development, an internal service, or a container. HTTP `serve` starts as soon as the watchers are registered, so `/` and `/health` respond while the initial index is still running. `/health` returns 503 until the first index snapshot is query-ready, and `start` reloads the serve index snapshot after the initial run and every successful watch update.
 
 With multiple configured sources, `ragbox start` starts all sources by default. Use `--source ragbox,icharts` to limit the running sources, or `--all-sources` to make the global behavior explicit.
 
