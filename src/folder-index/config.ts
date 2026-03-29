@@ -1,4 +1,4 @@
-import { PageIndexOptions } from "./types";
+import { PageIndexOptions, PageIndexRunner } from "./types";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) {
@@ -31,6 +31,13 @@ function parseExtraArgs(value: string | undefined): string[] | undefined {
   return trimmed ? trimmed.split(/\s+/) : undefined;
 }
 
+function parsePageIndexRunner(value: string | undefined): PageIndexRunner | undefined {
+  if (value === "auto" || value === "single" || value === "batch") {
+    return value;
+  }
+  return undefined;
+}
+
 export function loadPageIndexConfig(overrides: PageIndexOptions = {}): Required<Pick<PageIndexOptions, "pythonPath" | "model" | "baseUrl" | "concurrency">> &
   PageIndexOptions {
   const env = overrides.env ?? process.env;
@@ -38,6 +45,7 @@ export function loadPageIndexConfig(overrides: PageIndexOptions = {}): Required<
   return {
     pythonPath: overrides.pythonPath ?? env.PAGEINDEX_PYTHON ?? "python3",
     cliPath: overrides.cliPath ?? env.PAGEINDEX_CLI,
+    pageIndexRunner: overrides.pageIndexRunner ?? parsePageIndexRunner(env.PAGEINDEX_RUNNER) ?? "auto",
     model: overrides.model ?? env.PAGEINDEX_MODEL ?? env.LLM_MODEL ?? "gpt-4o-mini",
     baseUrl: overrides.baseUrl ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
     apiKey: overrides.apiKey ?? env.OPENAI_API_KEY,

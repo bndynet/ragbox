@@ -9,7 +9,7 @@ import { PAGEINDEX_DIR } from "./folder-index/manifest";
 import { queryMultipleIndexes, MultiQueryTarget } from "./folder-index/multi-query";
 import { queryFolder } from "./folder-index/query";
 import { startWatchFolder, watchFolder, WatchFolderHandle } from "./folder-index/watch";
-import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions, WatchProgressEvent } from "./folder-index/types";
+import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions, PageIndexRunner, WatchProgressEvent } from "./folder-index/types";
 import { startServe, ServeHandle } from "./serve";
 import { setupPageIndex, SetupPageIndexResult } from "./setup-pageindex";
 import { inspectIndex, validateIndex, InspectIndexResult, ValidateIndexResult } from "./sdk";
@@ -20,6 +20,13 @@ function parseConcurrency(value: string): number {
     throw new Error("--concurrency must be a positive integer");
   }
   return parsed;
+}
+
+function parsePageIndexRunner(value: string): PageIndexRunner {
+  if (value === "auto" || value === "single" || value === "batch") {
+    return value;
+  }
+  throw new Error("--pageindex-runner must be one of: auto, single, batch");
 }
 
 function parseNonNegativeInteger(value: string, optionName: string): number {
@@ -127,6 +134,7 @@ type IndexCommandOptions = SharedCommandOptions & {
   outputDir?: string;
   pageindexCli?: string;
   pageindexPython?: string;
+  pageindexRunner?: PageIndexRunner;
 };
 
 type WatchCommandOptions = IndexCommandOptions & {
@@ -406,6 +414,7 @@ function buildOptions(
     cliPath: commandOptions.pageindexCli,
     model: commandOptions.model,
     outputDir: commandOptions.outputDir,
+    pageIndexRunner: commandOptions.pageindexRunner,
     pythonPath: commandOptions.pageindexPython,
     watchDebounceMs: commandOptions.debounceMs,
     watchHealthFile: commandOptions.healthFile,
@@ -1107,6 +1116,7 @@ async function main(): Promise<void> {
       .option("--pageindex-cli <path>", "PageIndex script path")
       .option("-o, --output-dir <folder>", "folder for ragbox index files")
       .option("--pageindex-python <path>", "Python executable used to run PageIndex")
+      .option("--pageindex-runner <mode>", "PageIndex runner mode: auto, single, or batch", parsePageIndexRunner)
       .option("--json", "print a stable JSON result")
     )
   )
@@ -1241,6 +1251,7 @@ async function main(): Promise<void> {
         .option("--pageindex-cli <path>", "PageIndex script path")
         .option("-o, --output-dir <folder>", "folder for ragbox index files")
         .option("--pageindex-python <path>", "Python executable used to run PageIndex")
+        .option("--pageindex-runner <mode>", "PageIndex runner mode: auto, single, or batch", parsePageIndexRunner)
         .option("--debounce-ms <ms>", "watch change debounce in milliseconds", parseDebounceMs)
         .option("--health-file <path>", "write a watch health JSON file")
         .option("--host <host>", "host to bind", process.env.RAGBOX_SERVE_HOST ?? "127.0.0.1")
@@ -1313,6 +1324,7 @@ async function main(): Promise<void> {
       .option("--pageindex-cli <path>", "PageIndex script path")
       .option("-o, --output-dir <folder>", "folder for ragbox index files")
       .option("--pageindex-python <path>", "Python executable used to run PageIndex")
+      .option("--pageindex-runner <mode>", "PageIndex runner mode: auto, single, or batch", parsePageIndexRunner)
       .option("--debounce-ms <ms>", "watch change debounce in milliseconds", parseDebounceMs)
       .option("--health-file <path>", "write a watch health JSON file")
       .option("--jsonl", "print stable JSON Lines watch and index progress events")

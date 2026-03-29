@@ -43,4 +43,8 @@ export type {
   ServeOptions
 } from "./serve";
 
+export type {
+  PageIndexRunner
+} from "./folder-index/types";
+
 export * as advanced from "./advanced";

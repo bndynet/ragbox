@@ -12,7 +12,7 @@ import {
   writeFileState,
   writeManifest
 } from "./manifest";
-import { runPageIndex, readPageIndexSummary } from "./pageindex-runner";
+import { runPageIndex, readPageIndexSummary, runPageIndexBatchPool } from "./pageindex-runner";
 import { runWithConcurrency } from "./queue";
 import { generateRootTree, writeRootTree } from "./root-tree";
 import { scanMarkdownFiles } from "./scan";
@@ -85,44 +85,95 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
   await fs.mkdir(path.join(outputDir, INDEXES_DIR), { recursive: true });
   await removeDeletedIndexFiles(rootDir, diff.deleted, config.outputDir);
 
-  const indexedRecords = await runWithConcurrency<ScannedFile, DocumentRecord>(
-    toIndex,
-    config.concurrency,
-    async (scannedFile, index) => {
-      const absoluteOutputPath = resolveDocumentIndexPath(rootDir, scannedFile.indexPath, config.outputDir);
-      const progressIndex = index + 1;
-      const progressTotal = toIndex.length;
+  async function indexOne(scannedFile: ScannedFile, index: number): Promise<DocumentRecord> {
+    const absoluteOutputPath = resolveDocumentIndexPath(rootDir, scannedFile.indexPath, config.outputDir);
+    const progressIndex = index + 1;
+    const progressTotal = toIndex.length;
 
-      reportProgress(config, { type: "index-start", path: scannedFile.path, index: progressIndex, total: progressTotal });
+    reportProgress(config, { type: "index-start", path: scannedFile.path, index: progressIndex, total: progressTotal });
 
-      try {
-        await runPageIndex(scannedFile.absolutePath, absoluteOutputPath, config);
-        const summary = await readPageIndexSummary(absoluteOutputPath);
+    try {
+      await runPageIndex(scannedFile.absolutePath, absoluteOutputPath, config);
+      const summary = await readPageIndexSummary(absoluteOutputPath);
+      reportProgress(config, {
+        type: "index-done",
+        path: scannedFile.path,
+        index: progressIndex,
+        total: progressTotal,
+        summary
+      });
+      return recordFromScannedFile(scannedFile, { status: "ready", summary });
+    } catch (error) {
+      const previous = previousByPath.get(scannedFile.path);
+      reportProgress(config, {
+        type: "index-failed",
+        path: scannedFile.path,
+        index: progressIndex,
+        total: progressTotal,
+        error: errorMessage(error)
+      });
+      return recordFromScannedFile(scannedFile, {
+        status: "failed",
+        summary: previous?.summary,
+        error: errorMessage(error)
+      });
+    }
+  }
+
+  async function indexBatch(): Promise<DocumentRecord[]> {
+    const outputPaths = toIndex.map((scannedFile) => resolveDocumentIndexPath(rootDir, scannedFile.indexPath, config.outputDir));
+    const results = await runPageIndexBatchPool(
+      toIndex.map((scannedFile, index) => ({
+        inputPath: scannedFile.absolutePath,
+        outputPath: outputPaths[index]
+      })),
+      config,
+      {
+        onJobStart: (_job, index) => {
+          reportProgress(config, { type: "index-start", path: toIndex[index].path, index: index + 1, total: toIndex.length });
+        }
+      }
+    );
+
+    const records: DocumentRecord[] = [];
+    for (let index = 0; index < toIndex.length; index += 1) {
+      const scannedFile = toIndex[index];
+      const result = results[index];
+      if (result.ok) {
+        const summary = await readPageIndexSummary(outputPaths[index]);
         reportProgress(config, {
           type: "index-done",
           path: scannedFile.path,
-          index: progressIndex,
-          total: progressTotal,
+          index: index + 1,
+          total: toIndex.length,
           summary
         });
-        return recordFromScannedFile(scannedFile, { status: "ready", summary });
-      } catch (error) {
+        records.push(recordFromScannedFile(scannedFile, { status: "ready", summary }));
+      } else {
         const previous = previousByPath.get(scannedFile.path);
         reportProgress(config, {
           type: "index-failed",
           path: scannedFile.path,
-          index: progressIndex,
-          total: progressTotal,
-          error: errorMessage(error)
+          index: index + 1,
+          total: toIndex.length,
+          error: result.error
         });
-        return recordFromScannedFile(scannedFile, {
-          status: "failed",
-          summary: previous?.summary,
-          error: errorMessage(error)
-        });
+        records.push(
+          recordFromScannedFile(scannedFile, {
+            status: "failed",
+            summary: previous?.summary,
+            error: result.error
+          })
+        );
       }
     }
-  );
+    return records;
+  }
+
+  const indexedRecords =
+    config.pageIndexRunner === "single" || toIndex.length < 2
+      ? await runWithConcurrency<ScannedFile, DocumentRecord>(toIndex, config.concurrency, indexOne)
+      : await indexBatch();
 
   const indexedByPath = new Map(indexedRecords.map((record) => [record.path, record]));
   const documents: DocumentRecord[] = [];

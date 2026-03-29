@@ -19,6 +19,7 @@ import {
   LlmClient,
   Manifest,
   PageIndexOptions,
+  PageIndexRunner,
   QueryResult,
   RootTreeNode,
   WatchProgressEvent
@@ -51,6 +52,7 @@ export type CreateIndexOptions = SdkOptions & {
   pageIndexPython?: string;
   pageIndexOutputArg?: string;
   pageIndexExtraArgs?: string[];
+  pageIndexRunner?: PageIndexRunner;
   concurrency?: number;
   onProgress?: (event: IndexProgressEvent) => void;
 };
@@ -184,6 +186,7 @@ async function toPageIndexOptions(options: CreateIndexOptions | QueryIndexOption
     model: options.model,
     outputArg: createOptions.pageIndexOutputArg,
     outputDir: options.outputDir,
+    pageIndexRunner: createOptions.pageIndexRunner,
     progress: createOptions.onProgress,
     pythonPath: createOptions.pageIndexPython,
     trace: queryOptions.trace,

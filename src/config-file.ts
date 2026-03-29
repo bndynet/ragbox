@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PageIndexOptions } from "./folder-index/types";
+import { PageIndexOptions, PageIndexRunner } from "./folder-index/types";
 
 export const RAGBOX_CONFIG_FILE = "ragbox.config.json";
 
@@ -10,6 +10,7 @@ export type RagboxPageIndexConfig = {
   extraArgs?: string[];
   outputArg?: string;
   python?: string;
+  runner?: PageIndexRunner;
 };
 
 export type RagboxLlmConfig = {
@@ -164,12 +165,13 @@ function mergeIndexConfig(...configs: Array<RagboxIndexConfig | undefined>): Rag
 function pageIndexConfigToOptions(
   configDir: string,
   config: RagboxPageIndexConfig
-): Pick<PageIndexOptions, "cliPath" | "concurrency" | "extraArgs" | "outputArg" | "pythonPath"> {
+): Pick<PageIndexOptions, "cliPath" | "concurrency" | "extraArgs" | "outputArg" | "pageIndexRunner" | "pythonPath"> {
   return {
     cliPath: resolveConfigCommandPath(configDir, config.cli),
     concurrency: config.concurrency,
     extraArgs: config.extraArgs,
     outputArg: config.outputArg,
+    pageIndexRunner: config.runner,
     pythonPath: resolveConfigCommandPath(configDir, config.python)
   };
 }
@@ -199,7 +201,9 @@ export function createDefaultRagboxConfig(options: Pick<WriteDefaultRagboxConfig
   return {
     version: 1,
     pageIndex: {
-      cli: "/path/to/PageIndex/run_pageindex.py"
+      cli: "/path/to/PageIndex/run_pageindex.py",
+      concurrency: 1,
+      runner: "auto"
     },
     llm: {
       baseUrl: "https://api.openai.com/v1",

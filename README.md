@@ -233,10 +233,11 @@ Resolution order is command-line flags, then `ragbox.config.json`, then environm
 
 | Setting | Env | CLI flag | Used by | Default |
 | --- | --- | --- | --- | --- |
-| PageIndex script | `PAGEINDEX_CLI` | `ragbox setup pageindex` writes config | `index`, `watch` | required when indexing |
-| Python executable | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch` | `python3` |
-| Output directory | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch` | `<folder>/.pageindex` |
-| Concurrency | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch` | `1` |
+| PageIndex script | `PAGEINDEX_CLI` | `ragbox setup pageindex` writes config | `index`, `watch`, `start` | required when indexing |
+| Python executable | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch`, `start` | `python3` |
+| Output directory | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch`, `start` | `<folder>/.pageindex` |
+| Concurrency | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch`, `start` | `1` |
+| PageIndex runner | `PAGEINDEX_RUNNER` | `--pageindex-runner` | `index`, `watch`, `start` | `auto` |
 | API base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | required for query and usually PageIndex |
 | Model | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
@@ -552,6 +553,7 @@ Common patterns:
 - Keep API keys in a private server config, environment variables, or your secret manager. Do not commit real keys.
 - Use `RAGBOX_SERVE_TOKEN` or `--auth-token` when `serve` is reachable beyond localhost.
 - Start with `--concurrency 1`; raise it only after checking PageIndex and API rate limits.
+- Keep the default `--pageindex-runner auto` for Markdown/MDX indexes; it uses warm PageIndex workers when possible and falls back to the single-file CLI when needed.
 
 Example private server config:
 
@@ -560,7 +562,8 @@ Example private server config:
   "version": 1,
   "pageIndex": {
     "cli": "/opt/PageIndex/run_pageindex.py",
-    "python": "/opt/pageindex-venv/bin/python"
+    "python": "/opt/pageindex-venv/bin/python",
+    "runner": "auto"
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",

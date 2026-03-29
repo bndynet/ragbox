@@ -56,6 +56,89 @@ fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), J
   );
 }
 
+async function writeFakePageIndexPackage(baseDir: string): Promise<{ cliPath: string; importLog: string }> {
+  const packageDir = path.join(baseDir, "pageindex");
+  const importLog = path.join(baseDir, "pageindex-import.log");
+  const cliPath = path.join(baseDir, "run_pageindex.py");
+
+  await fs.mkdir(packageDir, { recursive: true });
+  await fs.writeFile(path.join(packageDir, "__init__.py"), "", "utf8");
+  await fs.writeFile(
+    path.join(packageDir, "utils.py"),
+    `class _Options:
+    pass
+
+class ConfigLoader:
+    def load(self, user_opt):
+        opt = _Options()
+        opt.model = user_opt.get("model") or "fake-model"
+        opt.if_add_node_summary = user_opt.get("if_add_node_summary")
+        opt.if_add_doc_description = user_opt.get("if_add_doc_description")
+        opt.if_add_node_text = user_opt.get("if_add_node_text")
+        opt.if_add_node_id = user_opt.get("if_add_node_id")
+        return opt
+`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(packageDir, "page_index_md.py"),
+    `import os
+
+with open(os.environ["FAKE_PAGEINDEX_IMPORT_LOG"], "a", encoding="utf-8") as f:
+    f.write("import\\n")
+
+async def md_to_tree(md_path, if_thinning=False, min_token_threshold=5000, if_add_node_summary=None, summary_token_threshold=200, model=None, if_add_doc_description=None, if_add_node_text=None, if_add_node_id=None):
+    with open(md_path, encoding="utf-8") as f:
+        text = f.read()
+    return {
+        "node_id": "root",
+        "summary": "summary:" + os.path.basename(md_path),
+        "nodes": [{"node_id": "n1", "text": text}],
+        "options": {
+            "if_thinning": if_thinning,
+            "min_token_threshold": min_token_threshold,
+            "summary_token_threshold": summary_token_threshold,
+            "model": model,
+            "if_add_node_text": if_add_node_text,
+            "if_add_node_id": if_add_node_id,
+        },
+    }
+`,
+    "utf8"
+  );
+  await fs.writeFile(cliPath, "# fake PageIndex checkout root\n", "utf8");
+  return { cliPath, importLog };
+}
+
+async function writePythonSinglePageIndexScript(scriptPath: string, logPath: string): Promise<void> {
+  await fs.writeFile(
+    scriptPath,
+    `import json
+import os
+import sys
+
+args = sys.argv[1:]
+with open(${JSON.stringify(logPath)}, "a", encoding="utf-8") as f:
+    f.write("single\\n")
+md_path = args[args.index("--md_path") + 1]
+output_path = None
+if "--output" in args:
+    output_path = args[args.index("--output") + 1]
+with open(md_path, encoding="utf-8") as f:
+    text = f.read()
+tree = {"node_id": "root", "summary": "single:" + os.path.basename(md_path), "nodes": [{"node_id": "n1", "text": text}]}
+if output_path is None:
+    os.makedirs("results", exist_ok=True)
+    name = os.path.splitext(os.path.basename(md_path))[0]
+    output_path = os.path.join("results", name + "_structure.json")
+os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump(tree, f)
+`,
+    "utf8"
+  );
+}
+
 async function pathExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);
@@ -328,6 +411,11 @@ test("loadPageIndexConfig reads PageIndex extra args from the environment", () =
   assert.deepEqual(config.extraArgs, ["--if-add-node-text", "yes", "--if-add-node-id", "yes"]);
 });
 
+test("loadPageIndexConfig reads PageIndex runner mode from the environment", () => {
+  assert.equal(loadPageIndexConfig({ env: { PAGEINDEX_RUNNER: "batch" } }).pageIndexRunner, "batch");
+  assert.equal(loadPageIndexConfig({ env: {} }).pageIndexRunner, "auto");
+});
+
 test("loadPageIndexConfig defaults to native PageIndex results output", () => {
   const config = loadPageIndexConfig({ env: {} });
 
@@ -472,6 +560,124 @@ fs.writeFileSync(path.join("results", "guide_structure.json"), JSON.stringify({ 
   const output = JSON.parse(await fs.readFile(indexPath, "utf8")) as { text: string };
   assert.match(output.text, /Fresh marker/);
   assert.doesNotMatch(output.text, /stale marker/);
+});
+
+test("createIndex uses warm PageIndex batch workers", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const { cliPath, importLog } = await writeFakePageIndexPackage(tempDir);
+  const progress: string[] = [];
+
+  await fs.mkdir(docsDir, { recursive: true });
+  for (let index = 1; index <= 5; index += 1) {
+    await fs.writeFile(path.join(docsDir, `guide-${index}.md`), `# Guide ${index}\n\nBody ${index}\n`, "utf8");
+  }
+
+  const result = await ragbox.createIndex(docsDir, {
+    concurrency: 2,
+    env: {
+      ...process.env,
+      FAKE_PAGEINDEX_IMPORT_LOG: importLog
+    },
+    outputDir,
+    pageIndexCli: cliPath,
+    pageIndexPython: "python3",
+    pageIndexRunner: "batch",
+    onProgress: (event) => {
+      progress.push(event.type);
+    }
+  });
+
+  assert.equal(result.counts.ready, 5);
+  assert.equal(result.counts.failed, 0);
+  assert.equal((await fs.readFile(importLog, "utf8")).trim().split(/\r?\n/).length, 2);
+  assert.equal(progress.filter((event) => event === "index-start").length, 5);
+  assert.equal(progress.filter((event) => event === "index-done").length, 5);
+  for (const document of result.manifest.documents) {
+    const output = JSON.parse(await fs.readFile(path.join(outputDir, document.indexPath), "utf8")) as { summary: string };
+    assert.match(output.summary, /^summary:guide-\d\.md$/);
+  }
+});
+
+test("createIndex auto runner falls back to single runner when PageIndex import fails", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "run_pageindex.py");
+  const logPath = path.join(tempDir, "single.log");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "one.md"), "# One\n", "utf8");
+  await fs.writeFile(path.join(docsDir, "two.md"), "# Two\n", "utf8");
+  await writePythonSinglePageIndexScript(scriptPath, logPath);
+
+  const result = await ragbox.createIndex(docsDir, {
+    concurrency: 2,
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexOutputArg: "--output",
+    pageIndexPython: "python3",
+    pageIndexRunner: "auto"
+  });
+
+  assert.equal(result.counts.ready, 2);
+  assert.equal(result.counts.failed, 0);
+  assert.equal((await fs.readFile(logPath, "utf8")).trim().split(/\r?\n/).length, 2);
+});
+
+test("createIndex batch runner reports failures when PageIndex import fails", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "run_pageindex.py");
+  const logPath = path.join(tempDir, "single.log");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "one.md"), "# One\n", "utf8");
+  await fs.writeFile(path.join(docsDir, "two.md"), "# Two\n", "utf8");
+  await writePythonSinglePageIndexScript(scriptPath, logPath);
+
+  const result = await ragbox.createIndex(docsDir, {
+    concurrency: 2,
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexOutputArg: "--output",
+    pageIndexPython: "python3",
+    pageIndexRunner: "batch"
+  });
+
+  assert.equal(result.counts.ready, 0);
+  assert.equal(result.counts.failed, 2);
+  assert.equal(await pathExists(logPath), false);
+  assert.match(result.manifest.documents[0].error ?? "", /No module named 'pageindex'|ModuleNotFoundError/);
+});
+
+test("createIndex auto runner falls back for unsupported batch extra args", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "run_pageindex.py");
+  const logPath = path.join(tempDir, "single.log");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "one.md"), "# One\n", "utf8");
+  await fs.writeFile(path.join(docsDir, "two.md"), "# Two\n", "utf8");
+  await writePythonSinglePageIndexScript(scriptPath, logPath);
+
+  const result = await ragbox.createIndex(docsDir, {
+    concurrency: 2,
+    outputDir,
+    pageIndexCli: scriptPath,
+    pageIndexExtraArgs: ["--unsupported-pageindex-flag", "value"],
+    pageIndexOutputArg: "--output",
+    pageIndexPython: "python3",
+    pageIndexRunner: "auto"
+  });
+
+  assert.equal(result.counts.ready, 2);
+  assert.equal(result.counts.failed, 0);
+  assert.equal((await fs.readFile(logPath, "utf8")).trim().split(/\r?\n/).length, 2);
 });
 
 test("queryIndex returns the structured QueryResult contract", async () => {
@@ -1009,9 +1215,13 @@ test("init CLI writes a ragbox config file", async () => {
     version: number;
     docs: { rootDir: string; outputDir: string };
     llm: { apiKey: string; baseUrl: string; model: string };
+    pageIndex: { cli: string; concurrency: number; runner: string };
   };
 
   assert.equal(config.version, 1);
+  assert.equal(config.pageIndex.cli, "/path/to/PageIndex/run_pageindex.py");
+  assert.equal(config.pageIndex.concurrency, 1);
+  assert.equal(config.pageIndex.runner, "auto");
   assert.equal(config.llm.baseUrl, "https://api.openai.com/v1");
   assert.equal(config.llm.model, "gpt-4o-mini");
   assert.equal(config.llm.apiKey, "YOUR_OPENAI_API_KEY");

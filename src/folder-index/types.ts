@@ -46,9 +46,12 @@ export type LlmClient = {
   chatCompletion: (request: LlmChatRequest) => Promise<string>;
 };
 
+export type PageIndexRunner = "auto" | "single" | "batch";
+
 export type PageIndexOptions = {
   pythonPath?: string;
   cliPath?: string;
+  pageIndexRunner?: PageIndexRunner;
   model?: string;
   baseUrl?: string;
   apiKey?: string;

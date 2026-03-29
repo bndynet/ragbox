@@ -231,10 +231,11 @@ Server 端使用时，建议把稳定配置集中写在 `ragbox.config.json`：P
 
 | 配置 | 环境变量 | 命令参数 | 用于 | 默认值 |
 | --- | --- | --- | --- | --- |
-| PageIndex 脚本 | `PAGEINDEX_CLI` | `ragbox setup pageindex` 写入配置 | `index`, `watch` | 索引时必填 |
-| Python 可执行文件 | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch` | `python3` |
-| 输出目录 | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch` | `<folder>/.pageindex` |
-| 并发数 | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch` | `1` |
+| PageIndex 脚本 | `PAGEINDEX_CLI` | `ragbox setup pageindex` 写入配置 | `index`, `watch`, `start` | 索引时必填 |
+| Python 可执行文件 | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch`, `start` | `python3` |
+| 输出目录 | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch`, `start` | `<folder>/.pageindex` |
+| 并发数 | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch`, `start` | `1` |
+| PageIndex runner | `PAGEINDEX_RUNNER` | `--pageindex-runner` | `index`, `watch`, `start` | `auto` |
 | API Base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API Key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | query 必填，PageIndex 通常也需要 |
 | 模型 | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
@@ -560,6 +561,7 @@ ragbox query ./.ragbox-index "..."
 - API key 可以放私有 server 配置、环境变量或 secret manager；不要提交真实 key
 - 当 `serve` 不只绑定 localhost 时，使用 `RAGBOX_SERVE_TOKEN` 或 `--auth-token`
 - 先用 `--concurrency 1`，确认 PageIndex 和模型服务限流后再提高
+- Markdown/MDX 索引保持默认 `--pageindex-runner auto`；它会优先使用 PageIndex 热 worker，无法使用时自动回退到单文件 CLI
 - 如果要求零停机更新，可以先索引到 staging 目录，成功后再切换读目录
 
 私有 server 配置示例：
@@ -569,7 +571,8 @@ ragbox query ./.ragbox-index "..."
   "version": 1,
   "pageIndex": {
     "cli": "/opt/PageIndex/run_pageindex.py",
-    "python": "/opt/pageindex-venv/bin/python"
+    "python": "/opt/pageindex-venv/bin/python",
+    "runner": "auto"
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
