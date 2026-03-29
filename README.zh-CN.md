@@ -120,7 +120,7 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
 | 不想每次重复路径 | 使用 `ragbox setup pageindex` 写入的 `ragbox.config.json`，或运行 `ragbox init` |
 | 多个文档目录一起查询 | 配置 `sources`，分别跑 `ragbox index --source <name>`，再用 `ragbox query --all-sources "..."` |
 | 调试回答质量 | `ragbox query --trace --json "..."` 或 `ragbox trace query "..."` |
-| 检查索引是否可用 | `ragbox status ./.ragbox-index` |
+| 检查索引和 HTTP 服务状态 | `ragbox status ./.ragbox-index` |
 | 诊断本地配置问题 | `ragbox doctor` |
 | 编辑文档时自动更新索引 | `ragbox watch ./docs --output-dir ./.ragbox-index --jsonl` |
 | 跑完整本地服务流程 | `ragbox start --auth-token <token>` |
@@ -334,7 +334,7 @@ ragbox inspect --all-sources --json
 
 ### `ragbox status [target]`
 
-检查索引是否已经可以 query。适合 CI、部署脚本和 smoke check。
+检查索引是否已经可以 query，并探测本机 HTTP 服务的 `/health` 是否可达。服务探测会使用 `RAGBOX_SERVE_HOST` 和 `RAGBOX_SERVE_PORT`，默认是 `127.0.0.1:8787`。
 
 ```bash
 ragbox status ./.ragbox-index
@@ -344,7 +344,7 @@ ragbox status --json
 
 ### `ragbox doctor [target]`
 
-检查本地配置、PageIndex CLI 路径、LLM 设置、API key 是否存在，以及索引是否有效。这个命令不会发起网络请求。
+检查本地配置、PageIndex CLI 路径、LLM 设置、API key 是否存在、索引是否有效，以及本机 ragbox HTTP 服务是否健康。
 
 ```bash
 ragbox doctor
@@ -457,6 +457,7 @@ Public HTTP contract：
 ```bash
 curl http://127.0.0.1:8787/
 curl http://127.0.0.1:8787/health
+ragbox status ./.ragbox-index
 
 curl -H "Authorization: Bearer dev-token" \
   http://127.0.0.1:8787/indexes

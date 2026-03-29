@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import http from "node:http";
 import path from "node:path";
 import { Command } from "commander";
 import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig, writeDefaultRagboxConfig } from "./config-file";
@@ -10,7 +11,7 @@ import { queryMultipleIndexes, MultiQueryTarget } from "./folder-index/multi-que
 import { queryFolder } from "./folder-index/query";
 import { startWatchFolder, watchFolder, WatchFolderHandle } from "./folder-index/watch";
 import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions, PageIndexRunner, WatchProgressEvent } from "./folder-index/types";
-import { startServe, ServeHandle } from "./serve";
+import { startServe, ServeHandle, ServeHealthResult } from "./serve";
 import { setupPageIndex, SetupPageIndexResult } from "./setup-pageindex";
 import { inspectIndex, validateIndex, InspectIndexResult, ValidateIndexResult } from "./sdk";
 
@@ -226,11 +227,25 @@ type StatusTargetOutput = {
   warnings: ValidateIndexResult["warnings"];
 };
 
+type ServeHealthCheckOutput = {
+  version: 1;
+  url: string;
+  host: string;
+  port: number;
+  ok: boolean;
+  reachable: boolean;
+  status?: ServeHealthResult["status"];
+  statusCode?: number;
+  health?: ServeHealthResult;
+  error?: string;
+};
+
 type StatusJsonOutput = {
   version: 1;
   command: "status";
   ok: boolean;
   targets: StatusTargetOutput[];
+  serve?: ServeHealthCheckOutput;
 };
 
 type DoctorCheck = {
@@ -443,6 +458,102 @@ function parseSourceNames(source: string | undefined): string[] {
     .split(",")
     .map((name) => name.trim())
     .filter(Boolean);
+}
+
+function resolveServeProbeHost(): string {
+  const host = process.env.RAGBOX_SERVE_HOST ?? "127.0.0.1";
+  if (host === "0.0.0.0") {
+    return "127.0.0.1";
+  }
+  if (host === "::") {
+    return "::1";
+  }
+  return host;
+}
+
+function resolveServeProbePort(): number {
+  return parseServePort(process.env.RAGBOX_SERVE_PORT ?? "8787");
+}
+
+function serveHealthUrl(host: string, port: number): string {
+  const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `http://${urlHost}:${port}/health`;
+}
+
+function isServeHealthResult(value: unknown): value is ServeHealthResult {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const health = value as Partial<ServeHealthResult>;
+  return health.version === 1
+    && typeof health.ok === "boolean"
+    && (health.status === "ready" || health.status === "degraded" || health.status === "error")
+    && typeof health.indexes === "object"
+    && health.indexes !== null;
+}
+
+async function checkServeHealth(): Promise<ServeHealthCheckOutput> {
+  const host = resolveServeProbeHost();
+  const port = resolveServeProbePort();
+  const url = serveHealthUrl(host, port);
+
+  return await new Promise((resolve) => {
+    const request = http.get(url, { timeout: 2000 }, (response) => {
+      let raw = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        raw += chunk;
+      });
+      response.on("end", () => {
+        let health: ServeHealthResult | undefined;
+        let error: string | undefined;
+
+        if (raw.trim()) {
+          try {
+            const parsed = JSON.parse(raw) as unknown;
+            if (isServeHealthResult(parsed)) {
+              health = parsed;
+            } else {
+              error = "Response was not a ragbox health payload.";
+            }
+          } catch (parseError) {
+            error = parseError instanceof Error ? parseError.message : String(parseError);
+          }
+        } else {
+          error = "Response body was empty.";
+        }
+
+        const statusCode = response.statusCode ?? 0;
+        resolve({
+          version: 1,
+          url,
+          host,
+          port,
+          ok: Boolean(health?.ok) && statusCode >= 200 && statusCode < 300,
+          reachable: true,
+          status: health?.status,
+          statusCode,
+          health,
+          error
+        });
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy(new Error("Timed out after 2000ms."));
+    });
+    request.on("error", (error) => {
+      resolve({
+        version: 1,
+        url,
+        host,
+        port,
+        ok: false,
+        reachable: false,
+        error: error.message
+      });
+    });
+  });
 }
 
 function requireFolder(folder: string | undefined, commandName: string): string {
@@ -688,12 +799,43 @@ async function buildStatusOutput(targets: DiagnosticTarget[]): Promise<StatusJso
     });
   }
 
+  const serve = await checkServeHealth();
+
   return {
     version: 1,
     command: "status",
-    ok: statusTargets.every((target) => target.ok),
-    targets: statusTargets
+    ok: statusTargets.every((target) => target.ok) && serve.ok,
+    targets: statusTargets,
+    serve
   };
+}
+
+function serveHealthSummary(serve: ServeHealthCheckOutput): string {
+  if (!serve.reachable) {
+    return `HTTP server is not reachable at ${serve.url}: ${serve.error ?? "connection failed"}`;
+  }
+  if (!serve.health) {
+    return `HTTP server responded at ${serve.url}, but health could not be parsed: ${serve.error ?? "invalid response"}`;
+  }
+
+  const indexes = serve.health.indexes;
+  return `HTTP server ${serve.health.status} at ${serve.url}; indexes ready=${indexes.ready}/${indexes.total}.`;
+}
+
+function printServeHealthOutput(serve: ServeHealthCheckOutput): void {
+  console.log(`${serve.ok ? "ok" : "error"} serve ${serve.url}`);
+  console.log(`  reachable=${serve.reachable}`);
+  if (serve.statusCode !== undefined) {
+    console.log(`  http=${serve.statusCode}`);
+  }
+  if (serve.health) {
+    const indexes = serve.health.indexes;
+    console.log(`  status=${serve.health.status}`);
+    console.log(`  indexes=${indexes.total} ready=${indexes.ready} failed=${indexes.failed}`);
+  }
+  if (serve.error) {
+    console.log(`  error ${serve.error}`);
+  }
 }
 
 function printStatusOutput(status: StatusJsonOutput): void {
@@ -712,6 +854,9 @@ function printStatusOutput(status: StatusJsonOutput): void {
     for (const warning of target.warnings) {
       console.log(`  warning ${warning.code}: ${warning.message}`);
     }
+  }
+  if (status.serve) {
+    printServeHealthOutput(status.serve);
   }
 }
 
@@ -836,11 +981,19 @@ async function buildDoctorOutput(
   });
 
   const status = await buildStatusOutput(targets);
+  const indexStatusOk = status.targets.every((target) => target.ok);
   checks.push({
     name: "index-status",
-    ok: status.ok,
+    ok: indexStatusOk,
     message: status.targets.length > 0 ? `Checked ${status.targets.length} index target(s).` : "No index target was checked."
   });
+  if (status.serve) {
+    checks.push({
+      name: "serve-health",
+      ok: status.serve.ok,
+      message: serveHealthSummary(status.serve)
+    });
+  }
 
   return {
     version: 1,

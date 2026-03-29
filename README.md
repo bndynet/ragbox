@@ -122,7 +122,7 @@ The default setup needs:
 | Avoid repeating paths | use the `ragbox.config.json` written by `ragbox setup pageindex`, or run `ragbox init` |
 | Query several docs folders together | Configure `sources`, run `ragbox index --source <name>`, then `ragbox query --all-sources "..."` |
 | Debug answer quality | `ragbox query --trace --json "..."` or `ragbox trace query "..."` |
-| Check whether an index is usable | `ragbox status ./.ragbox-index` |
+| Check index and HTTP server status | `ragbox status ./.ragbox-index` |
 | Diagnose local setup issues | `ragbox doctor` |
 | Keep docs indexed while editing | `ragbox watch ./docs --output-dir ./.ragbox-index --jsonl` |
 | Run the full local service loop | `ragbox start --auth-token <token>` |
@@ -336,7 +336,7 @@ ragbox inspect --all-sources --json
 
 ### `ragbox status [target]`
 
-Checks whether an index is ready to query. This is useful in CI, deploy scripts, and smoke checks.
+Checks whether an index is ready to query and whether the local HTTP server health endpoint is reachable. The server probe uses `RAGBOX_SERVE_HOST` and `RAGBOX_SERVE_PORT`, defaulting to `127.0.0.1:8787`.
 
 ```bash
 ragbox status ./.ragbox-index
@@ -346,7 +346,7 @@ ragbox status --json
 
 ### `ragbox doctor [target]`
 
-Checks the local setup: config, PageIndex CLI path, LLM settings, API key presence, and index validity. It does not call the network.
+Checks the local setup: config, PageIndex CLI path, LLM settings, API key presence, index validity, and local HTTP server health.
 
 ```bash
 ragbox doctor
@@ -452,6 +452,7 @@ Single-index requests:
 ```bash
 curl http://127.0.0.1:8787/
 curl http://127.0.0.1:8787/health
+ragbox status ./.ragbox-index
 
 curl -H "Authorization: Bearer dev-token" \
   http://127.0.0.1:8787/indexes

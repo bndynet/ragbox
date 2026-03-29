@@ -278,6 +278,36 @@ function waitForProcessOutput(child: ChildProcessWithoutNullStreams, pattern: Re
   });
 }
 
+function runProcess(command: string, args: string[], options: {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<{
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}> {
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let stdout = "";
+  let stderr = "";
+
+  return new Promise((resolve, reject) => {
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.once("error", reject);
+    child.once("close", (status) => {
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
 async function stopChildProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
@@ -1695,19 +1725,30 @@ test("status CLI prints index validation JSON", async () => {
 
   const result = spawnSync(process.execPath, [cliPath, "status", fixture.outputDir, "--json"], {
     cwd: tempDir,
-    encoding: "utf8"
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      RAGBOX_SERVE_HOST: "127.0.0.1",
+      RAGBOX_SERVE_PORT: "1"
+    }
   });
 
   assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
   const output = JSON.parse(result.stdout) as {
     command: string;
     ok: boolean;
+    serve?: {
+      ok: boolean;
+      reachable: boolean;
+    };
     targets: Array<{ ok: boolean; inspect?: { counts: { ready: number } } }>;
   };
   assert.equal(output.command, "status");
-  assert.equal(output.ok, true);
+  assert.equal(output.ok, false);
   assert.equal(output.targets[0]?.ok, true);
   assert.equal(output.targets[0]?.inspect?.counts.ready, 1);
+  assert.equal(output.serve?.ok, false);
+  assert.equal(output.serve?.reachable, false);
 });
 
 test("trace query CLI reports the query failure stage", async () => {
@@ -1758,6 +1799,61 @@ test("serve exposes health, indexes, and optional bearer auth", async () => {
     assert.equal(indexes.status, 200);
     assert.equal((indexes.body as { indexes: Array<{ ok: boolean; counts?: { ready: number } }> }).indexes[0]?.ok, true);
     assert.equal((indexes.body as { indexes: Array<{ ok: boolean; counts?: { ready: number } }> }).indexes[0]?.counts?.ready, 1);
+  } finally {
+    await handle.close();
+  }
+});
+
+test("status CLI can probe a running serve health endpoint", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+  const handle = await ragbox.startServe({
+    port: 0,
+    target: fixture.outputDir
+  });
+
+  try {
+    const result = await runProcess(
+      process.execPath,
+      [
+        cliPath,
+        "status",
+        fixture.outputDir,
+        "--json"
+      ],
+      {
+        env: {
+          ...process.env,
+          RAGBOX_SERVE_HOST: handle.host,
+          RAGBOX_SERVE_PORT: String(handle.port)
+        }
+      }
+    );
+
+    assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+    const output = JSON.parse(result.stdout) as {
+      ok: boolean;
+      serve?: {
+        ok: boolean;
+        reachable: boolean;
+        statusCode?: number;
+        health?: {
+          status: string;
+          indexes: {
+            ready: number;
+            total: number;
+          };
+        };
+      };
+    };
+    assert.equal(output.ok, true);
+    assert.equal(output.serve?.ok, true);
+    assert.equal(output.serve?.reachable, true);
+    assert.equal(output.serve?.statusCode, 200);
+    assert.equal(output.serve?.health?.status, "ready");
+    assert.equal(output.serve?.health?.indexes.ready, 1);
+    assert.equal(output.serve?.health?.indexes.total, 1);
   } finally {
     await handle.close();
   }
