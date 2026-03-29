@@ -8,6 +8,11 @@
     "baseUrl": "https://api.openai.com/v1",
     "model": "gpt-4o-mini"
   },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
+  },
   "sources": {
     "ragbox": {
       "rootDir": "./ragbox",

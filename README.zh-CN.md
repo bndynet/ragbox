@@ -39,6 +39,11 @@ ragbox setup pageindex
     "model": "gpt-4o-mini",
     "apiKey": "sk-..."
   },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
+  },
   "docs": {
     "rootDir": "./docs",
     "outputDir": "./.ragbox-index"
@@ -149,6 +154,11 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
     "model": "gpt-4o-mini",
     "apiKey": "sk-..."
   },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
+  },
   "docs": {
     "rootDir": "./docs",
     "outputDir": "./.ragbox-index"
@@ -163,7 +173,7 @@ ragbox init
 ragbox init --docs-dir ./content --output-dir ./.idx
 ```
 
-配置文件中的相对路径会按配置文件所在目录解析。Server 端部署可以把 `baseUrl`、`model` 和 `apiKey` 一起放在私有 `ragbox.config.json`，或按环境拆成 `ragbox.config.prod.json`。如果配置文件会提交到仓库或共享给他人，就不要写真实 `apiKey`，改用环境变量或 secret manager。
+配置文件中的相对路径会按配置文件所在目录解析。Server 端部署可以把 `baseUrl`、`model`、`serve.host`、`serve.port` 和 `apiKey` 一起放在私有 `ragbox.config.json`，或按环境拆成 `ragbox.config.prod.json`。如果配置文件会提交到仓库或共享给他人，就不要写真实 `apiKey`，改用环境变量或 secret manager。
 
 只有一个文档源时，用顶层 `docs` 就够了，不需要传 `--source`。项目里确实有多个命名文档源时，再使用可选的 `sources` 映射。
 
@@ -190,6 +200,11 @@ ragbox --config ./ragbox.config.json index
     "baseUrl": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "apiKey": "sk-..."
+  },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
   },
   "sources": {
     "ragbox": {
@@ -232,11 +247,11 @@ ragbox --config ./ragbox.config.prod.json query "怎么部署？"
 
 ## 配置
 
-Server 端使用时，建议把稳定配置集中写在 `ragbox.config.json`：PageIndex 路径、docs 路径、LLM `baseUrl`、`model`，以及私有配置文件里的 `apiKey`。环境变量和命令参数仍然支持，适合覆盖配置、接 secret manager，或临时运行。
+Server 端使用时，建议把稳定配置集中写在 `ragbox.config.json`：PageIndex 路径、docs 路径、serve host/port、LLM `baseUrl`、`model`，以及私有配置文件里的 `apiKey`。环境变量和命令参数仍然支持，适合覆盖配置、接 secret manager，或临时运行。
 
 配置解析优先级为：命令行参数、`ragbox.config.json`、环境变量、默认值。
 
-| 配置 | 环境变量 | 命令参数 | 用于 | 默认值 |
+| 配置 | 环境变量 | 配置 / 命令参数 | 用于 | 默认值 |
 | --- | --- | --- | --- | --- |
 | PageIndex 脚本 | `PAGEINDEX_CLI` | `ragbox setup pageindex` 写入配置 | `index`, `watch`, `start` | 索引时必填 |
 | Python 可执行文件 | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch`, `start` | `python3` |
@@ -246,9 +261,9 @@ Server 端使用时，建议把稳定配置集中写在 `ragbox.config.json`：P
 | API Base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API Key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | query 必填，PageIndex 通常也需要 |
 | 模型 | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
-| Serve host | `RAGBOX_SERVE_HOST` | `--host` | `serve` | `127.0.0.1` |
-| Serve port | `RAGBOX_SERVE_PORT` | `--port` | `serve` | `8787` |
-| Serve token | `RAGBOX_SERVE_TOKEN` | `--auth-token` | `serve` | 无 |
+| Serve host | `RAGBOX_SERVE_HOST` | `serve.host`, `--host` | `start`, `serve`, `status`, `doctor` | `127.0.0.1` |
+| Serve port | `RAGBOX_SERVE_PORT` | `serve.port`, `--port` | `start`, `serve`, `status`, `doctor` | `8787` |
+| Serve token | `RAGBOX_SERVE_TOKEN` | `serve.authToken`, `--auth-token` | `start`, `serve` | 无 |
 | Watch debounce | `RAGBOX_WATCH_DEBOUNCE_MS` | `--debounce-ms` | `watch` | `500` |
 | Watch 重试次数 | `RAGBOX_WATCH_RETRY_ATTEMPTS` | `--retry-attempts` | `watch` | `0` |
 | Watch 重试延迟 | `RAGBOX_WATCH_RETRY_DELAY_MS` | `--retry-delay-ms` | `watch` | `1000` |
@@ -341,7 +356,7 @@ ragbox inspect --all-sources --json
 
 ### `ragbox status [target]`
 
-检查索引是否已经可以 query，并探测本机 HTTP 服务的 `/health` 是否可达。服务探测会使用 `RAGBOX_SERVE_HOST` 和 `RAGBOX_SERVE_PORT`，默认是 `127.0.0.1:8787`。
+检查索引是否已经可以 query，并探测本机 HTTP 服务的 `/health` 是否可达。服务探测会先使用 `serve.host` / `serve.port`，再使用 `RAGBOX_SERVE_HOST` / `RAGBOX_SERVE_PORT`，默认是 `127.0.0.1:8787`。
 
 ```bash
 ragbox status ./.ragbox-index
@@ -510,7 +525,7 @@ curl -X POST http://localhost:8787/query \
 curl -X POST http://localhost:8787/reload
 ```
 
-`serve` 首版面向本地服务、内网服务、container sidecar 和 docs backend。不要把 `.ragbox-index` 作为静态目录直接暴露，因为里面可能包含源文档正文。浏览器 widget 不应该直接携带 ragbox token；建议先请求自己的 backend，由 backend 负责用户登录、限流和审计，再转发给 `ragbox serve`。生产环境建议绑定 localhost 或内网地址，并配置 `--auth-token` 或 `RAGBOX_SERVE_TOKEN`。
+`serve` 首版面向本地服务、内网服务、container sidecar 和 docs backend。不要把 `.ragbox-index` 作为静态目录直接暴露，因为里面可能包含源文档正文。浏览器 widget 不应该直接携带 ragbox token；建议先请求自己的 backend，由 backend 负责用户登录、限流和审计，再转发给 `ragbox serve`。生产环境建议绑定 localhost 或内网地址，并配置 `serve.authToken`、`--auth-token` 或 `RAGBOX_SERVE_TOKEN`。
 
 ### `ragbox watch <folder>`
 
@@ -584,7 +599,7 @@ ragbox query ./.ragbox-index "..."
 - 把输出目录放在源码目录外，例如 `/var/lib/ragbox/docs-index`
 - 多副本应用需要读取同一份完整索引，可以挂载只读卷或随部署产物分发
 - API key 可以放私有 server 配置、环境变量或 secret manager；不要提交真实 key
-- 当 `serve` 不只绑定 localhost 时，使用 `RAGBOX_SERVE_TOKEN` 或 `--auth-token`
+- 当 `serve` 不只绑定 localhost 时，使用 `serve.authToken`、`RAGBOX_SERVE_TOKEN` 或 `--auth-token`；如果配置会提交或共享，要把 token 当作密钥处理
 - 先用 `--concurrency 1`，确认 PageIndex 和模型服务限流后再提高
 - Markdown/MDX 索引保持默认 `--pageindex-runner auto`；它会优先使用 PageIndex 热 worker，无法使用时自动回退到单文件 CLI
 - 如果要求零停机更新，可以先索引到 staging 目录，成功后再切换读目录
@@ -603,6 +618,11 @@ ragbox query ./.ragbox-index "..."
     "baseUrl": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "apiKey": "sk-..."
+  },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
   },
   "docs": {
     "rootDir": "/srv/app/docs",

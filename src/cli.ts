@@ -5,7 +5,13 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { Command } from "commander";
-import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig, writeDefaultRagboxConfig } from "./config-file";
+import {
+  listRagboxConfigSourceNames,
+  readRagboxConfig,
+  resolveRagboxConfig,
+  resolveRagboxServeConfig,
+  writeDefaultRagboxConfig
+} from "./config-file";
 import { loadPageIndexConfig } from "./folder-index/config";
 import { indexFolder } from "./folder-index/indexer";
 import { PAGEINDEX_DIR } from "./folder-index/manifest";
@@ -494,8 +500,7 @@ function parseSourceNames(source: string | undefined): string[] {
     .filter(Boolean);
 }
 
-function resolveServeProbeHost(): string {
-  const host = process.env.RAGBOX_SERVE_HOST ?? "127.0.0.1";
+function resolveServeProbeHost(host: string): string {
   if (host === "0.0.0.0") {
     return "127.0.0.1";
   }
@@ -503,10 +508,6 @@ function resolveServeProbeHost(): string {
     return "::1";
   }
   return host;
-}
-
-function resolveServeProbePort(): number {
-  return parseServePort(process.env.RAGBOX_SERVE_PORT ?? "8787");
 }
 
 function serveHealthUrl(host: string, port: number): string {
@@ -526,9 +527,11 @@ function isServeHealthResult(value: unknown): value is ServeHealthResult {
     && health.indexes !== null;
 }
 
-async function checkServeHealth(): Promise<ServeHealthCheckOutput> {
-  const host = resolveServeProbeHost();
-  const port = resolveServeProbePort();
+async function checkServeHealth(configPath?: string): Promise<ServeHealthCheckOutput> {
+  const { config } = await readRagboxConfig(configPath);
+  const serveConfig = resolveRagboxServeConfig({ config });
+  const host = resolveServeProbeHost(serveConfig.host);
+  const port = serveConfig.port;
   const url = serveHealthUrl(host, port);
 
   return await new Promise((resolve) => {
@@ -818,7 +821,7 @@ async function loadStartTargets(
   ];
 }
 
-async function buildStatusOutput(targets: DiagnosticTarget[]): Promise<StatusJsonOutput> {
+async function buildStatusOutput(targets: DiagnosticTarget[], configPath?: string): Promise<StatusJsonOutput> {
   const statusTargets: StatusTargetOutput[] = [];
 
   for (const target of targets) {
@@ -833,7 +836,7 @@ async function buildStatusOutput(targets: DiagnosticTarget[]): Promise<StatusJso
     });
   }
 
-  const serve = await checkServeHealth();
+  const serve = await checkServeHealth(configPath);
 
   return {
     version: 1,
@@ -1214,7 +1217,7 @@ async function buildDoctorOutput(
     message: runtime.apiKey ? "LLM API key is configured." : "OPENAI_API_KEY or llm.apiKey is not configured."
   });
 
-  const status = await buildStatusOutput(targets);
+  const status = await buildStatusOutput(targets, globalOptions.config);
   const indexStatusOk = status.targets.every((target) => target.ok);
   checks.push({
     name: "index-status",
@@ -1567,8 +1570,9 @@ async function main(): Promise<void> {
       .option("--json", "print a stable JSON result")
   )
     .action(async (target: string | undefined, commandOptions: DiagnosticCommandOptions, command: Command) => {
+      const globalOptions = getGlobalOptions(command);
       const targets = await loadDiagnosticTargets(command, commandOptions, target, true);
-      const status = await buildStatusOutput(targets);
+      const status = await buildStatusOutput(targets, globalOptions.config);
       if (commandOptions.json) {
         writeJson(status);
         return;
@@ -1642,7 +1646,7 @@ async function main(): Promise<void> {
         .option("--pageindex-runner <mode>", "PageIndex runner mode: auto, single, or batch", parsePageIndexRunner)
         .option("--debounce-ms <ms>", "watch change debounce in milliseconds", parseDebounceMs)
         .option("--health-file <path>", "write a watch health JSON file")
-        .option("--host <host>", "host to bind", process.env.RAGBOX_SERVE_HOST ?? "127.0.0.1")
+        .option("--host <host>", "host to bind")
         .option("--jsonl", "print stable JSON Lines start, watch, and index progress events")
         .option("--log-file <path>", "background stdout/stderr log file; defaults to ./ragbox.log")
         .option("--lock-file <path>", "create an exclusive lock file while start is running")
@@ -1689,7 +1693,7 @@ async function main(): Promise<void> {
         .argument("[target]", "docs folder or ragbox output directory")
         .option("--all-sources", "serve every configured source by default")
         .option("--auth-token <token>", "bearer token required for non-health endpoints")
-        .option("--host <host>", "host to bind", process.env.RAGBOX_SERVE_HOST ?? "127.0.0.1")
+        .option("--host <host>", "host to bind")
         .option("--port <number>", "port to bind", parseServePort)
     )
   )

@@ -10,7 +10,7 @@ ragbox init
 ragbox start
 ```
 
-`ragbox init` creates `ragbox.config.json`. Users should set the docs path, the index output path, the local PageIndex script, the model base URL, and the model name. The API key can be supplied from the environment or from a server-only config file.
+`ragbox init` creates `ragbox.config.json`. Users should set the docs path, the index output path, the local PageIndex script, the model base URL, the model name, and any preferred `serve.host` / `serve.port` / `serve.authToken`. The API key and serve token can be supplied from the environment or from a server-only config file.
 
 `ragbox start` is the easiest way to run an interactive project. It performs the initial index, watches the docs for changes, and starts the HTTP query API in one foreground process.
 

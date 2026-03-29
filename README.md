@@ -41,6 +41,11 @@ Before continuing, edit `ragbox.config.json`: add your model settings and point 
     "model": "gpt-4o-mini",
     "apiKey": "sk-..."
   },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
+  },
   "docs": {
     "rootDir": "./docs",
     "outputDir": "./.ragbox-index"
@@ -151,6 +156,11 @@ The default setup needs:
     "model": "gpt-4o-mini",
     "apiKey": "sk-..."
   },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
+  },
   "docs": {
     "rootDir": "./docs",
     "outputDir": "./.ragbox-index"
@@ -165,7 +175,7 @@ ragbox init
 ragbox init --docs-dir ./content --output-dir ./.idx
 ```
 
-Relative paths are resolved from the config file directory. Server-side deployments can keep `baseUrl`, `model`, and `apiKey` together in a private `ragbox.config.json` or environment-specific config such as `ragbox.config.prod.json`. If a config file is committed or shared, keep `apiKey` in environment variables or a secret manager instead.
+Relative paths are resolved from the config file directory. Server-side deployments can keep `baseUrl`, `model`, `serve.host`, `serve.port`, and `apiKey` together in a private `ragbox.config.json` or environment-specific config such as `ragbox.config.prod.json`. If a config file is committed or shared, keep `apiKey` in environment variables or a secret manager instead.
 
 For one documentation source, use the top-level `docs` object. No `--source` flag is needed. If a project needs multiple named sources, use the optional `sources` map.
 
@@ -192,6 +202,11 @@ For multiple documentation directories, name each one under `sources`. This is u
     "baseUrl": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "apiKey": "sk-..."
+  },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
   },
   "sources": {
     "ragbox": {
@@ -234,11 +249,11 @@ ragbox --config ./ragbox.config.prod.json query "How do I deploy?"
 
 ## Configuration
 
-For server-side use, keep the stable settings in `ragbox.config.json`: PageIndex paths, docs paths, LLM `baseUrl`, `model`, and, when the file is private, `apiKey`. Environment variables and CLI flags are still supported for overrides, secret managers, and one-off runs.
+For server-side use, keep the stable settings in `ragbox.config.json`: PageIndex paths, docs paths, serve host/port, LLM `baseUrl`, `model`, and, when the file is private, `apiKey`. Environment variables and CLI flags are still supported for overrides, secret managers, and one-off runs.
 
 Resolution order is command-line flags, then `ragbox.config.json`, then environment variables, then defaults.
 
-| Setting | Env | CLI flag | Used by | Default |
+| Setting | Env | Config / CLI | Used by | Default |
 | --- | --- | --- | --- | --- |
 | PageIndex script | `PAGEINDEX_CLI` | `ragbox setup pageindex` writes config | `index`, `watch`, `start` | required when indexing |
 | Python executable | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch`, `start` | `python3` |
@@ -248,9 +263,9 @@ Resolution order is command-line flags, then `ragbox.config.json`, then environm
 | API base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | required for query and usually PageIndex |
 | Model | `PAGEINDEX_MODEL`, `LLM_MODEL` | `--model` | `index`, `watch`, `query` | `gpt-4o-mini` |
-| Serve host | `RAGBOX_SERVE_HOST` | `--host` | `serve` | `127.0.0.1` |
-| Serve port | `RAGBOX_SERVE_PORT` | `--port` | `serve` | `8787` |
-| Serve token | `RAGBOX_SERVE_TOKEN` | `--auth-token` | `serve` | none |
+| Serve host | `RAGBOX_SERVE_HOST` | `serve.host`, `--host` | `start`, `serve`, `status`, `doctor` | `127.0.0.1` |
+| Serve port | `RAGBOX_SERVE_PORT` | `serve.port`, `--port` | `start`, `serve`, `status`, `doctor` | `8787` |
+| Serve token | `RAGBOX_SERVE_TOKEN` | `serve.authToken`, `--auth-token` | `start`, `serve` | none |
 | Watch debounce | `RAGBOX_WATCH_DEBOUNCE_MS` | `--debounce-ms` | `watch` | `500` |
 | Watch retry attempts | `RAGBOX_WATCH_RETRY_ATTEMPTS` | `--retry-attempts` | `watch` | `0` |
 | Watch retry delay | `RAGBOX_WATCH_RETRY_DELAY_MS` | `--retry-delay-ms` | `watch` | `1000` |
@@ -343,7 +358,7 @@ ragbox inspect --all-sources --json
 
 ### `ragbox status [target]`
 
-Checks whether an index is ready to query and whether the local HTTP server health endpoint is reachable. The server probe uses `RAGBOX_SERVE_HOST` and `RAGBOX_SERVE_PORT`, defaulting to `127.0.0.1:8787`.
+Checks whether an index is ready to query and whether the local HTTP server health endpoint is reachable. The server probe uses `serve.host` / `serve.port`, then `RAGBOX_SERVE_HOST` / `RAGBOX_SERVE_PORT`, defaulting to `127.0.0.1:8787`.
 
 ```bash
 ragbox status ./.ragbox-index
@@ -505,7 +520,7 @@ curl -X POST http://localhost:8787/query \
 curl -X POST http://localhost:8787/reload
 ```
 
-`serve` is designed for local services, internal services, container sidecars, and docs backends. Do not expose `.ragbox-index` as static files, because it can contain source document text. Browser widgets should call your own backend first; the backend can enforce user auth, rate limits, and audit logging before forwarding requests to `ragbox serve`. In production, bind to localhost or an internal network address and configure `--auth-token` or `RAGBOX_SERVE_TOKEN`.
+`serve` is designed for local services, internal services, container sidecars, and docs backends. Do not expose `.ragbox-index` as static files, because it can contain source document text. Browser widgets should call your own backend first; the backend can enforce user auth, rate limits, and audit logging before forwarding requests to `ragbox serve`. In production, bind to localhost or an internal network address and configure `serve.authToken`, `--auth-token`, or `RAGBOX_SERVE_TOKEN`.
 
 ### `ragbox watch <folder>`
 
@@ -576,7 +591,7 @@ Common patterns:
 - Store the output directory outside the source tree, for example `/var/lib/ragbox/docs-index`.
 - Mount or copy the completed output directory to every app replica that needs querying.
 - Keep API keys in a private server config, environment variables, or your secret manager. Do not commit real keys.
-- Use `RAGBOX_SERVE_TOKEN` or `--auth-token` when `serve` is reachable beyond localhost.
+- Use `serve.authToken`, `RAGBOX_SERVE_TOKEN`, or `--auth-token` when `serve` is reachable beyond localhost. Treat the token like a secret if the config is committed or shared.
 - Start with `--concurrency 1`; raise it only after checking PageIndex and API rate limits.
 - Keep the default `--pageindex-runner auto` for Markdown/MDX indexes; it uses warm PageIndex workers when possible and falls back to the single-file CLI when needed.
 
@@ -594,6 +609,11 @@ Example private server config:
     "baseUrl": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "apiKey": "sk-..."
+  },
+  "serve": {
+    "authToken": "YOUR_RAGBOX_SERVE_TOKEN",
+    "host": "127.0.0.1",
+    "port": 8787
   },
   "docs": {
     "rootDir": "/srv/app/docs",

@@ -3,6 +3,8 @@ import path from "node:path";
 import { PageIndexOptions, PageIndexRunner } from "./folder-index/types";
 
 export const RAGBOX_CONFIG_FILE = "ragbox.config.json";
+export const DEFAULT_SERVE_HOST = "127.0.0.1";
+export const DEFAULT_SERVE_PORT = 8787;
 
 export type RagboxPageIndexConfig = {
   cli?: string;
@@ -25,6 +27,12 @@ export type RagboxIndexConfig = {
   outputDir?: string;
 };
 
+export type RagboxServeConfig = {
+  authToken?: string;
+  host?: string;
+  port?: number;
+};
+
 export type RagboxConfigSource = RagboxIndexConfig & {
   index?: RagboxIndexConfig;
   llm?: RagboxLlmConfig;
@@ -38,6 +46,7 @@ export type RagboxConfig = {
   index?: RagboxIndexConfig;
   llm?: RagboxLlmConfig;
   pageIndex?: RagboxPageIndexConfig;
+  serve?: RagboxServeConfig;
   sources?: Record<string, RagboxConfigSource>;
 };
 
@@ -71,10 +80,19 @@ export type WritePageIndexSetupConfigOptions = {
   pythonPath?: string;
 };
 
+export type ResolveRagboxServeConfigOptions = RagboxServeConfig & {
+  config?: RagboxConfig;
+  env?: NodeJS.ProcessEnv;
+};
+
+export type ResolvedRagboxServeConfig = Required<Pick<RagboxServeConfig, "host" | "port">> & Pick<RagboxServeConfig, "authToken">;
+
 const DEFAULT_INCLUDE = ["**/*.md", "**/*.mdx"];
 const DEFAULT_EXCLUDE = ["node_modules/**", ".git/**", ".pageindex/**", "dist/**", "build/**"];
 const DEFAULT_API_KEY_PLACEHOLDER = "YOUR_OPENAI_API_KEY";
+const DEFAULT_SERVE_TOKEN_PLACEHOLDER = "YOUR_RAGBOX_SERVE_TOKEN";
 const API_KEY_PLACEHOLDERS = new Set([DEFAULT_API_KEY_PLACEHOLDER, "sk-..."]);
+const SERVE_TOKEN_PLACEHOLDERS = new Set([DEFAULT_SERVE_TOKEN_PLACEHOLDER, "<token>"]);
 
 async function pathExists(filePath: string): Promise<boolean> {
   try {
@@ -194,6 +212,37 @@ function indexConfigToOptions(configDir: string, config: RagboxIndexConfig): Pic
   };
 }
 
+export function parseRagboxServePort(value: unknown, source: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number.parseInt(value, 10) : NaN;
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+    throw new Error(`Invalid ${source}: ${String(value)}`);
+  }
+  return parsed;
+}
+
+function resolveRagboxServeToken(value: string | undefined): string | undefined {
+  const authToken = value?.trim();
+  return authToken && !SERVE_TOKEN_PLACEHOLDERS.has(authToken) ? authToken : undefined;
+}
+
+export function resolveRagboxServeConfig(options: ResolveRagboxServeConfigOptions = {}): ResolvedRagboxServeConfig {
+  const env = options.env ?? process.env;
+  return {
+    authToken: resolveRagboxServeToken(options.authToken)
+      ?? resolveRagboxServeToken(options.config?.serve?.authToken)
+      ?? resolveRagboxServeToken(env.RAGBOX_SERVE_TOKEN),
+    host: options.host ?? options.config?.serve?.host ?? env.RAGBOX_SERVE_HOST ?? DEFAULT_SERVE_HOST,
+    port: options.port
+      ?? parseRagboxServePort(options.config?.serve?.port, "ragbox config serve.port")
+      ?? parseRagboxServePort(env.RAGBOX_SERVE_PORT, "RAGBOX_SERVE_PORT")
+      ?? DEFAULT_SERVE_PORT
+  };
+}
+
 export function createDefaultRagboxConfig(options: Pick<WriteDefaultRagboxConfigOptions, "docsDir" | "outputDir"> = {}): RagboxConfig {
   const docsDir = options.docsDir ?? "./docs";
   const outputDir = options.outputDir ?? "./.ragbox-index";
@@ -209,6 +258,11 @@ export function createDefaultRagboxConfig(options: Pick<WriteDefaultRagboxConfig
       baseUrl: "https://api.openai.com/v1",
       model: "gpt-4o-mini",
       apiKey: DEFAULT_API_KEY_PLACEHOLDER
+    },
+    serve: {
+      authToken: DEFAULT_SERVE_TOKEN_PLACEHOLDER,
+      host: DEFAULT_SERVE_HOST,
+      port: DEFAULT_SERVE_PORT
     },
     docs: {
       rootDir: docsDir,

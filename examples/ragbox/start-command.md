@@ -22,6 +22,8 @@ ragbox stop
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
 
+`start` reads `serve.host` and `serve.port` from `ragbox.config.json`; pass `--host` or `--port` for a one-off override.
+
 Use `--background` for a quick detached run without `nohup`; stdout and stderr go to `./ragbox.log`, and the process id goes to `./ragbox.pid` unless those paths are overridden.
 Use `ragbox stop` from the same working directory to stop that background process.
 

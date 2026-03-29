@@ -1,14 +1,12 @@
 import http, { IncomingMessage, ServerResponse } from "node:http";
 import { AddressInfo } from "node:net";
 import { URL } from "node:url";
-import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig } from "./config-file";
+import { listRagboxConfigSourceNames, readRagboxConfig, resolveRagboxConfig, resolveRagboxServeConfig } from "./config-file";
 import { queryMultipleIndexes, MultiQueryResult, MultiQueryTarget } from "./folder-index/multi-query";
 import { queryFolder, QueryStageError } from "./folder-index/query";
 import { LlmClient, PageIndexOptions, QueryResult } from "./folder-index/types";
 import { InspectIndexResult, validateIndex, ValidateIndexResult } from "./sdk";
 
-const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 8787;
 const MAX_JSON_BODY_BYTES = 1024 * 1024;
 
 type JsonObject = Record<string, unknown>;
@@ -115,18 +113,6 @@ function mergeDefined<T extends object>(...values: T[]): T {
     }
   }
   return merged as T;
-}
-
-function parsePositivePort(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 65535) {
-    throw new Error(`Invalid serve port: ${value}`);
-  }
-  return parsed;
 }
 
 function parseSourceNames(source: string | string[] | undefined): string[] {
@@ -490,9 +476,14 @@ async function queryTargets(targets: ServeResolvedTarget[], question: string, op
 
 export async function startServe(options: ServeOptions = {}): Promise<ServeHandle> {
   const env = options.env ?? process.env;
-  const host = options.host ?? env.RAGBOX_SERVE_HOST ?? DEFAULT_HOST;
-  const port = options.port ?? parsePositivePort(env.RAGBOX_SERVE_PORT, DEFAULT_PORT);
-  const authToken = options.authToken ?? env.RAGBOX_SERVE_TOKEN;
+  const { config } = await readRagboxConfig(options.configPath);
+  const { authToken, host, port } = resolveRagboxServeConfig({
+    config,
+    env,
+    authToken: options.authToken,
+    host: options.host,
+    port: options.port
+  });
   const serverOptions: ServeOptions = {
     ...options,
     authToken,

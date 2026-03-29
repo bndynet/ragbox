@@ -1304,6 +1304,7 @@ test("init CLI writes a ragbox config file", async () => {
     docs: { rootDir: string; outputDir: string };
     llm: { apiKey: string; baseUrl: string; model: string };
     pageIndex: { cli: string; concurrency: number; runner: string };
+    serve: { authToken: string; host: string; port: number };
   };
 
   assert.equal(config.version, 1);
@@ -1313,6 +1314,9 @@ test("init CLI writes a ragbox config file", async () => {
   assert.equal(config.llm.baseUrl, "https://api.openai.com/v1");
   assert.equal(config.llm.model, "gpt-4o-mini");
   assert.equal(config.llm.apiKey, "YOUR_OPENAI_API_KEY");
+  assert.equal(config.serve.authToken, "YOUR_RAGBOX_SERVE_TOKEN");
+  assert.equal(config.serve.host, "127.0.0.1");
+  assert.equal(config.serve.port, 8787);
   assert.equal(config.docs.rootDir, "./content");
   assert.equal(config.docs.outputDir, "./.idx");
 
@@ -1857,6 +1861,67 @@ test("serve exposes health, indexes, and optional bearer auth", async () => {
     assert.equal(indexes.status, 200);
     assert.equal((indexes.body as { indexes: Array<{ ok: boolean; counts?: { ready: number } }> }).indexes[0]?.ok, true);
     assert.equal((indexes.body as { indexes: Array<{ ok: boolean; counts?: { ready: number } }> }).indexes[0]?.counts?.ready, 1);
+  } finally {
+    await handle.close();
+  }
+});
+
+test("serve reads host, port, and auth token from ragbox config", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const configPath = path.join(tempDir, "ragbox.config.json");
+
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        serve: {
+          authToken: "config-secret",
+          host: "127.0.0.1",
+          port: 0
+        },
+        docs: {
+          rootDir: fixture.rootDir,
+          outputDir: fixture.outputDir
+        }
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  const handle = await ragbox.startServe({
+    configPath,
+    env: {
+      ...process.env,
+      RAGBOX_SERVE_TOKEN: "env-secret",
+      RAGBOX_SERVE_PORT: "not-a-port"
+    }
+  });
+
+  try {
+    assert.equal(handle.host, "127.0.0.1");
+    assert.notEqual(handle.port, 0);
+
+    const health = await requestJson(`${handle.url}/health`);
+    assert.equal(health.status, 200);
+    assert.equal((health.body as { ok: boolean }).ok, true);
+
+    const unauthorized = await requestJson(`${handle.url}/indexes`, {
+      headers: {
+        Authorization: "Bearer env-secret"
+      }
+    });
+    assert.equal(unauthorized.status, 401);
+
+    const indexes = await requestJson(`${handle.url}/indexes`, {
+      headers: {
+        Authorization: "Bearer config-secret"
+      }
+    });
+    assert.equal(indexes.status, 200);
   } finally {
     await handle.close();
   }
