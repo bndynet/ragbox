@@ -325,6 +325,64 @@ async function stopChildProcess(child: ChildProcessWithoutNullStreams): Promise<
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForFileMatch(filePath: string, pattern: RegExp, timeoutMs = 5000): Promise<RegExpMatchArray> {
+  const startedAt = Date.now();
+  let lastContent = "";
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      lastContent = await fs.readFile(filePath, "utf8");
+      const match = lastContent.match(pattern);
+      if (match) {
+        return match;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+    await sleep(50);
+  }
+
+  throw new Error(`Timed out waiting for ${pattern} in ${filePath}\n${lastContent}`);
+}
+
+async function stopProcessId(pid: number): Promise<void> {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      return;
+    }
+    throw error;
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 3000) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        return;
+      }
+      throw error;
+    }
+    await sleep(50);
+  }
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      throw error;
+    }
+  }
+}
+
 function queuedLlmClient(responses: string[], calls: LlmChatRequest[] = []): LlmClient {
   return {
     chatCompletion: async (request) => {
@@ -2147,8 +2205,25 @@ test("start CLI help lists watch and serve options", () => {
   assert.match(result.stdout, /--port/);
   assert.match(result.stdout, /--auth-token/);
   assert.match(result.stdout, /--jsonl/);
+  assert.match(result.stdout, /--background/);
+  assert.match(result.stdout, /--pid-file/);
+  assert.match(result.stdout, /--no-pid-file/);
+  assert.match(result.stdout, /--log-file/);
   assert.match(result.stdout, /--staging/);
   assert.match(result.stdout, /--all-sources/);
+});
+
+test("stop CLI help lists pid file options", () => {
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+  const result = spawnSync(process.execPath, [cliPath, "stop", "--help"], {
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stdout, /--pid-file/);
+  assert.match(result.stdout, /--force/);
+  assert.match(result.stdout, /--timeout-ms/);
+  assert.match(result.stdout, /--json/);
 });
 
 test("start CLI serves health while the initial index is still running", async () => {
@@ -2223,6 +2298,92 @@ fs.writeFileSync(outputPath ?? path.join("results", "example_structure.json"), J
   } finally {
     await fs.writeFile(releasePath, "go", "utf8").catch(() => undefined);
     await stopChildProcess(child);
+  }
+});
+
+test("start CLI --background detaches and stop CLI stops the default pid file process", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const realTempDir = await fs.realpath(tempDir);
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "fake-pageindex.cjs");
+  const pidFile = path.join(realTempDir, "ragbox.pid");
+  const logFile = path.join(realTempDir, "ragbox.log");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+  let pid: number | undefined;
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await writeFakePageIndexScript(scriptPath, "background ok");
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      cliPath,
+      "start",
+      docsDir,
+      "--output-dir",
+      outputDir,
+      "--pageindex-cli",
+      scriptPath,
+      "--pageindex-python",
+      process.execPath,
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "0",
+      "--background"
+    ],
+    {
+      cwd: tempDir,
+      encoding: "utf8"
+    }
+  );
+
+  try {
+    assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+    assert.match(result.stdout, /Started ragbox in the background \(pid=\d+\)/);
+    assert.match(result.stdout, new RegExp(`log=${logFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.match(result.stdout, new RegExp(`pidFile=${pidFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+
+    pid = Number((await fs.readFile(pidFile, "utf8")).trim());
+    assert.ok(Number.isInteger(pid) && pid > 0);
+
+    const serving = await waitForFileMatch(logFile, /Serving ragbox at (http:\/\/127\.0\.0\.1:\d+)/, 10000);
+    const url = serving[1];
+    await waitForFileMatch(logFile, /Reloaded serve index snapshot \(1\/1 ready\)/, 10000);
+
+    const health = await requestJson(`${url}/health`);
+    assert.equal(health.status, 200);
+    assert.equal((health.body as { status: string }).status, "ready");
+
+    const stop = spawnSync(process.execPath, [cliPath, "stop", "--json"], {
+      cwd: tempDir,
+      encoding: "utf8"
+    });
+    assert.equal(stop.status, 0, `STDOUT:\n${stop.stdout}\nSTDERR:\n${stop.stderr}`);
+    const stopOutput = JSON.parse(stop.stdout) as {
+      command: string;
+      pid: number;
+      pidFile: string;
+      removedPidFile: boolean;
+      signal: string;
+      stale: boolean;
+      stopped: boolean;
+    };
+    assert.equal(stopOutput.command, "stop");
+    assert.equal(stopOutput.pid, pid);
+    assert.equal(stopOutput.pidFile, pidFile);
+    assert.equal(stopOutput.signal, "SIGTERM");
+    assert.equal(stopOutput.stale, false);
+    assert.equal(stopOutput.stopped, true);
+    assert.equal(stopOutput.removedPidFile, true);
+    assert.equal(await pathExists(pidFile), false);
+    pid = undefined;
+  } finally {
+    if (pid) {
+      await stopProcessId(pid);
+    }
   }
 });
 

@@ -65,6 +65,13 @@ ragbox watch --jsonl
 ragbox start
 ```
 
+如果只是想临时脱离当前终端运行，可以加 `--background`：
+
+```bash
+ragbox start --background
+ragbox stop
+```
+
 需要临时覆盖配置时，仍然可以显式传路径：
 
 ```bash
@@ -416,6 +423,7 @@ indexes/
 ragbox start
 ragbox start --auth-token dev-token
 ragbox start --host 127.0.0.1 --port 8787 --jsonl
+ragbox start --background
 ragbox start --source ragbox
 ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
@@ -423,9 +431,25 @@ ragbox start ./docs --output-dir ./.ragbox-index
 
 当你已经通过 `ragbox setup pageindex` 准备好默认本地配置，并希望用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`。HTTP `serve` 会在 watcher 注册后立即启动，所以初始索引还在运行时，`/` 和 `/health` 已经可以响应。`/health` 在首个索引快照可查询前返回 503；初始索引完成后，以及之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
 
+传入 `--background` 时，`start` 会脱离当前终端后台运行。后台进程默认把 stdout/stderr 写到 `./ragbox.log`，并把 PID 写到 `./ragbox.pid`。可以用 `--log-file <path>` 和 `--pid-file <path>` 覆盖路径；如果不想写 PID 文件，可以传 `--no-pid-file`。
+
+在同一个工作目录运行 `ragbox stop`，会读取 `./ragbox.pid` 并停止对应后台进程。如果启动时用了自定义 pid 文件，停止时也传同一个 `--pid-file <path>`。
+
 配置了多个 source 时，`ragbox start` 默认启动全部 source。可以用 `--source ragbox,icharts` 限定范围，也可以用 `--all-sources` 显式表达全局启动。
 
 `start` 不会创建或修改 `ragbox.config.json`；默认本地 setup 先运行 `ragbox setup pageindex`，如果你想自己管理 PageIndex，再用 `ragbox init` 手动配置。
+
+### `ragbox stop`
+
+读取当前工作目录的 `./ragbox.pid`，停止由 `ragbox start --background` 启动的后台进程。
+
+```bash
+ragbox stop
+ragbox stop --pid-file /var/run/ragbox.pid
+ragbox stop --force
+```
+
+默认发送 `SIGTERM`，等待进程退出后删除 pid 文件。传 `--force` 时发送 `SIGKILL`。
 
 ### `ragbox serve [target]`
 
@@ -594,13 +618,18 @@ ragbox --config ./ragbox.config.prod.json query "怎么配置认证？"
 
 ### 后台运行
 
-`ragbox start` 有意以前台进程运行。Server 部署时，建议交给进程管理器托管，这样关闭终端、SSH 断开或进程崩溃后都能继续运行或自动重启。
-
-临时测试可以用 `nohup`：
+本地或内网临时测试时，可以用 `ragbox start --background` 让同一个 start 流程脱离当前终端：
 
 ```bash
-nohup ragbox --config ./ragbox.config.prod.json start > ragbox.log 2>&1 &
+ragbox --config ./ragbox.config.prod.json start \
+  --background
 ```
+
+```bash
+ragbox stop
+```
+
+长期运行的 server 仍然建议交给进程管理器托管，这样进程崩溃后可以自动重启，启动顺序也更清晰。
 
 Linux server 推荐用 `systemd`：
 

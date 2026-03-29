@@ -1,6 +1,6 @@
 # The `ragbox start` Command
 
-`ragbox start` runs the full local service loop for a configured documentation project. It is designed for local development, internal services, and container processes where one foreground process should own indexing, watching, and serving.
+`ragbox start` runs the full local service loop for a configured documentation project. It is designed for local development, internal services, and container processes where one process should own indexing, watching, and serving.
 
 When `ragbox start` runs, it does three things:
 
@@ -8,7 +8,7 @@ When `ragbox start` runs, it does three things:
 2. It starts watch mode so later Markdown or MDX changes update the index.
 3. It starts the HTTP service for `/health`, `/indexes`, `/query`, and `/reload`.
 
-The command waits for the initial index to finish before starting the HTTP service. After watch mode completes a successful reindex, `start` reloads the service snapshot so new queries use the latest index.
+The HTTP service starts as soon as watchers are registered, so `/health` can respond while the initial index is still running. After the initial index and later watch updates finish successfully, `start` reloads the service snapshot so new queries use the latest index.
 
 Common examples:
 
@@ -17,8 +17,13 @@ ragbox start
 ragbox start --source ragbox
 ragbox start --all-sources
 ragbox start --host 127.0.0.1 --port 8787 --auth-token dev-token
+ragbox start --background
+ragbox stop
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
+
+Use `--background` for a quick detached run without `nohup`; stdout and stderr go to `./ragbox.log`, and the process id goes to `./ragbox.pid` unless those paths are overridden.
+Use `ragbox stop` from the same working directory to stop that background process.
 
 When the config contains multiple sources, `ragbox start` starts all configured sources by default. Use `--source ragbox,icharts` to limit the running sources, or `--all-sources` to make the global behavior explicit.
 

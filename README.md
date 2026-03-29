@@ -67,6 +67,13 @@ Use `start` when you want one foreground process for indexing, watching, and ser
 ragbox start
 ```
 
+For a quick detached local run, use `--background`:
+
+```bash
+ragbox start --background
+ragbox stop
+```
+
 You can still pass explicit paths when you want to override the config for one command:
 
 ```bash
@@ -411,6 +418,7 @@ Runs the complete local service loop: start watch, serve the HTTP query API, and
 ragbox start
 ragbox start --auth-token dev-token
 ragbox start --host 127.0.0.1 --port 8787 --jsonl
+ragbox start --background
 ragbox start --source ragbox
 ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
@@ -418,9 +426,25 @@ ragbox start ./docs --output-dir ./.ragbox-index
 
 Use `start` after `ragbox setup pageindex` when you want one foreground process for local development, an internal service, or a container. HTTP `serve` starts as soon as the watchers are registered, so `/` and `/health` respond while the initial index is still running. `/health` returns 503 until the first index snapshot is query-ready, and `start` reloads the serve index snapshot after the initial run and every successful watch update.
 
+Pass `--background` to detach `start` from the current terminal. Background runs write stdout/stderr to `./ragbox.log` and the process id to `./ragbox.pid` by default. Override those paths with `--log-file <path>` and `--pid-file <path>`, or pass `--no-pid-file` when you do not want a pid file.
+
+Use `ragbox stop` from the same working directory to stop the background process recorded in `./ragbox.pid`. Pass `--pid-file <path>` if you started with a custom pid file.
+
 With multiple configured sources, `ragbox start` starts all sources by default. Use `--source ragbox,icharts` to limit the running sources, or `--all-sources` to make the global behavior explicit.
 
 `start` does not create or edit `ragbox.config.json`; run `ragbox setup pageindex` for the default local setup, or `ragbox init` when you want to manage PageIndex yourself.
+
+### `ragbox stop`
+
+Stops a `ragbox start --background` process by reading `./ragbox.pid` in the current working directory.
+
+```bash
+ragbox stop
+ragbox stop --pid-file /var/run/ragbox.pid
+ragbox stop --force
+```
+
+By default, `stop` sends `SIGTERM`, waits for the process to exit, and removes the pid file. Use `--force` to send `SIGKILL`.
 
 ### `ragbox serve [target]`
 
@@ -585,13 +609,18 @@ ragbox --config ./ragbox.config.prod.json query "How do I configure authenticati
 
 ### Run In The Background
 
-`ragbox start` intentionally runs in the foreground. For a server, run it under a process supervisor so it survives terminal closes, SSH disconnects, and crashes.
-
-For quick testing, `nohup` is enough:
+For quick local or internal testing, `ragbox start --background` detaches the same start loop from the current terminal:
 
 ```bash
-nohup ragbox --config ./ragbox.config.prod.json start > ragbox.log 2>&1 &
+ragbox --config ./ragbox.config.prod.json start \
+  --background
 ```
+
+```bash
+ragbox stop
+```
+
+For a long-running server, prefer a process supervisor so crashes are restarted and startup ordering is explicit.
 
 For Linux servers, prefer `systemd`:
 

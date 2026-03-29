@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -48,6 +50,10 @@ function parseRetryDelayMs(value: string): number {
 
 function parseDebounceMs(value: string): number {
   return parseNonNegativeInteger(value, "--debounce-ms");
+}
+
+function parseStopTimeoutMs(value: string): number {
+  return parseNonNegativeInteger(value, "--timeout-ms");
 }
 
 function parseServePort(value: string): number {
@@ -166,7 +172,18 @@ type ServeCommandOptions = SharedCommandOptions & {
   port?: number;
 };
 
-type StartCommandOptions = WatchCommandOptions & ServeCommandOptions;
+type StartCommandOptions = WatchCommandOptions & ServeCommandOptions & {
+  background?: boolean;
+  logFile?: string;
+  pidFile?: string | false;
+};
+
+type StopCommandOptions = {
+  force?: boolean;
+  json?: boolean;
+  pidFile?: string;
+  timeoutMs?: number;
+};
 
 type InitCommandOptions = {
   docsDir?: string;
@@ -246,6 +263,23 @@ type StatusJsonOutput = {
   ok: boolean;
   targets: StatusTargetOutput[];
   serve?: ServeHealthCheckOutput;
+};
+
+type BackgroundStartResult = {
+  pid: number;
+  logFile: string;
+  pidFile?: string;
+};
+
+type StopCommandResult = {
+  version: 1;
+  command: "stop";
+  pid: number;
+  pidFile: string;
+  signal: "SIGKILL" | "SIGTERM";
+  stopped: boolean;
+  stale: boolean;
+  removedPidFile: boolean;
 };
 
 type DoctorCheck = {
@@ -912,6 +946,206 @@ async function closeStartHandles(watchHandles: WatchFolderHandle[], serveHandle:
   ]);
 }
 
+const BACKGROUND_CHILD_ENV = "RAGBOX_BACKGROUND_CHILD";
+
+function stripBackgroundStartArgs(args: string[]): string[] {
+  const stripped: string[] = [];
+  let afterTerminator = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (afterTerminator) {
+      stripped.push(arg);
+      continue;
+    }
+
+    if (arg === "--") {
+      afterTerminator = true;
+      stripped.push(arg);
+      continue;
+    }
+
+    if (arg === "--background" || arg.startsWith("--background=")) {
+      continue;
+    }
+
+    if (arg === "--pid-file" || arg === "--log-file") {
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--no-pid-file" || arg.startsWith("--pid-file=") || arg.startsWith("--log-file=")) {
+      continue;
+    }
+
+    stripped.push(arg);
+  }
+
+  return stripped;
+}
+
+async function writeBackgroundPidFile(pidFile: string | undefined, pid: number): Promise<string | undefined> {
+  if (!pidFile) {
+    return undefined;
+  }
+
+  const resolvedPidFile = path.resolve(pidFile);
+  await fs.mkdir(path.dirname(resolvedPidFile), { recursive: true });
+  await fs.writeFile(resolvedPidFile, `${pid}\n`, "utf8");
+  return resolvedPidFile;
+}
+
+async function launchBackgroundStart(commandOptions: StartCommandOptions): Promise<BackgroundStartResult> {
+  const cliScript = process.argv[1];
+  if (!cliScript) {
+    throw new Error("Cannot start ragbox in the background because the CLI script path is unavailable.");
+  }
+
+  const logFile = path.resolve(commandOptions.logFile ?? "ragbox.log");
+  await fs.mkdir(path.dirname(logFile), { recursive: true });
+
+  const logFd = openSync(logFile, "a");
+  const childArgs = [cliScript, ...stripBackgroundStartArgs(process.argv.slice(2))];
+  const child = spawn(process.execPath, childArgs, {
+    cwd: process.cwd(),
+    detached: true,
+    env: {
+      ...process.env,
+      [BACKGROUND_CHILD_ENV]: "1"
+    },
+    stdio: ["ignore", logFd, logFd]
+  });
+
+  try {
+    if (!child.pid) {
+      throw new Error("Failed to start background ragbox process.");
+    }
+
+    const pidFile = await writeBackgroundPidFile(
+      commandOptions.pidFile === false ? undefined : commandOptions.pidFile ?? "ragbox.pid",
+      child.pid
+    );
+    child.unref();
+    return {
+      pid: child.pid,
+      logFile,
+      pidFile
+    };
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
+  } finally {
+    closeSync(logFd);
+  }
+}
+
+function printBackgroundStartResult(result: BackgroundStartResult, jsonl: boolean | undefined): void {
+  if (jsonl) {
+    writeStartJsonLine("start-background", result);
+    return;
+  }
+
+  console.log(`Started ragbox in the background (pid=${result.pid})`);
+  console.log(`log=${result.logFile}`);
+  if (result.pidFile) {
+    console.log(`pidFile=${result.pidFile}`);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isNoSuchProcessError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ESRCH";
+}
+
+async function readStopPidFile(pidFile: string): Promise<number> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(pidFile, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`No ragbox pid file found: ${pidFile}. Run ragbox start --background first, or pass --pid-file.`);
+    }
+    throw error;
+  }
+
+  const trimmed = raw.trim();
+  const pid = Number.parseInt(trimmed, 10);
+  if (!trimmed || !Number.isInteger(pid) || pid <= 0 || String(pid) !== trimmed) {
+    throw new Error(`Invalid ragbox pid file: ${pidFile}`);
+  }
+  return pid;
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (isNoSuchProcessError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const startedAt = Date.now();
+  do {
+    if (!isProcessRunning(pid)) {
+      return true;
+    }
+    await sleep(50);
+  } while (Date.now() - startedAt < timeoutMs);
+
+  return !isProcessRunning(pid);
+}
+
+async function runStopAction(commandOptions: StopCommandOptions): Promise<StopCommandResult> {
+  const pidFile = path.resolve(commandOptions.pidFile ?? "ragbox.pid");
+  const pid = await readStopPidFile(pidFile);
+  const signal = commandOptions.force ? "SIGKILL" : "SIGTERM";
+  const timeoutMs = commandOptions.timeoutMs ?? 5000;
+  let stale = false;
+
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if (!isNoSuchProcessError(error)) {
+      throw error;
+    }
+    stale = true;
+  }
+
+  const stopped = stale || await waitForProcessExit(pid, timeoutMs);
+  if (!stopped) {
+    throw new Error(`ragbox process ${pid} did not stop within ${timeoutMs}ms; pid file left in place: ${pidFile}`);
+  }
+
+  await fs.rm(pidFile, { force: true });
+  return {
+    version: 1,
+    command: "stop",
+    pid,
+    pidFile,
+    signal,
+    stopped,
+    stale,
+    removedPidFile: true
+  };
+}
+
+function printStopResult(result: StopCommandResult): void {
+  if (result.stale) {
+    console.log(`Removed stale ragbox pid file ${result.pidFile} (pid=${result.pid})`);
+    return;
+  }
+  console.log(`Stopped ragbox (pid=${result.pid}, signal=${result.signal})`);
+}
+
 function isPathLikeCommand(value: string): boolean {
   return path.isAbsolute(value) || value.startsWith(".") || value.includes("/") || value.includes("\\");
 }
@@ -1400,6 +1634,7 @@ async function main(): Promise<void> {
         .argument("[folder]", "folder to index, watch, and serve")
         .option("--all-sources", "start every configured source")
         .option("--auth-token <token>", "bearer token required for non-health endpoints")
+        .option("--background", "run start as a detached background process")
         .option("-c, --concurrency <number>", "PageIndex concurrency", parseConcurrency)
         .option("--pageindex-cli <path>", "PageIndex script path")
         .option("-o, --output-dir <folder>", "folder for ragbox index files")
@@ -1409,7 +1644,10 @@ async function main(): Promise<void> {
         .option("--health-file <path>", "write a watch health JSON file")
         .option("--host <host>", "host to bind", process.env.RAGBOX_SERVE_HOST ?? "127.0.0.1")
         .option("--jsonl", "print stable JSON Lines start, watch, and index progress events")
+        .option("--log-file <path>", "background stdout/stderr log file; defaults to ./ragbox.log")
         .option("--lock-file <path>", "create an exclusive lock file while start is running")
+        .option("--pid-file <path>", "background process id file; defaults to ./ragbox.pid")
+        .option("--no-pid-file", "do not write a background process id file")
         .option("--port <number>", "port to bind", parseServePort)
         .option("--retry-attempts <number>", "retry failed watch index runs", parseRetryAttempts)
         .option("--retry-delay-ms <ms>", "delay between watch retries in milliseconds", parseRetryDelayMs)
@@ -1419,7 +1657,29 @@ async function main(): Promise<void> {
     )
   )
     .action(async (folder: string | undefined, commandOptions: StartCommandOptions, command: Command) => {
+      if (commandOptions.background && process.env[BACKGROUND_CHILD_ENV] !== "1") {
+        const result = await launchBackgroundStart(commandOptions);
+        printBackgroundStartResult(result, commandOptions.jsonl);
+        return;
+      }
+
       await runStartAction(folder, commandOptions, command);
+    });
+
+  program
+    .command("stop")
+    .description("stop a background ragbox start process")
+    .option("--pid-file <path>", "pid file written by ragbox start --background", "ragbox.pid")
+    .option("--force", "send SIGKILL instead of SIGTERM")
+    .option("--timeout-ms <ms>", "time to wait for the process to exit", parseStopTimeoutMs)
+    .option("--json", "print a stable JSON result")
+    .action(async (commandOptions: StopCommandOptions) => {
+      const result = await runStopAction(commandOptions);
+      if (commandOptions.json) {
+        writeJson(result);
+        return;
+      }
+      printStopResult(result);
     });
 
   addProjectOptions(
