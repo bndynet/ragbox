@@ -351,6 +351,46 @@ async function waitForFileMatch(filePath: string, pattern: RegExp, timeoutMs = 5
   throw new Error(`Timed out waiting for ${pattern} in ${filePath}\n${lastContent}`);
 }
 
+async function waitForFileMatchAfter(filePath: string, pattern: RegExp, offset: number, timeoutMs = 5000): Promise<RegExpMatchArray> {
+  const startedAt = Date.now();
+  let lastContent = "";
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      lastContent = await fs.readFile(filePath, "utf8");
+      const match = lastContent.slice(offset).match(pattern);
+      if (match) {
+        return match;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+    await sleep(50);
+  }
+
+  throw new Error(`Timed out waiting for ${pattern} in ${filePath} after offset ${offset}\n${lastContent}`);
+}
+
+async function waitForProcessGone(pid: number, timeoutMs = 3000): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        return;
+      }
+      throw error;
+    }
+    await sleep(50);
+  }
+
+  throw new Error(`Process ${pid} is still running`);
+}
+
 async function stopProcessId(pid: number): Promise<void> {
   try {
     process.kill(pid, "SIGTERM");
@@ -2291,6 +2331,26 @@ test("stop CLI help lists pid file options", () => {
   assert.match(result.stdout, /--json/);
 });
 
+test("restart CLI help lists stop and start options", () => {
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+  const result = spawnSync(process.execPath, [cliPath, "restart", "--help"], {
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+  assert.match(result.stdout, /--pid-file/);
+  assert.match(result.stdout, /--log-file/);
+  assert.match(result.stdout, /--force/);
+  assert.match(result.stdout, /--timeout-ms/);
+  assert.match(result.stdout, /--json/);
+  assert.match(result.stdout, /--host/);
+  assert.match(result.stdout, /--port/);
+  assert.match(result.stdout, /--auth-token/);
+  assert.match(result.stdout, /--all-sources/);
+  assert.match(result.stdout, /--pageindex-cli/);
+  assert.match(result.stdout, /--output-dir/);
+});
+
 test("start CLI serves health while the initial index is still running", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
   const docsDir = path.join(tempDir, "docs");
@@ -2448,6 +2508,97 @@ test("start CLI --background detaches and stop CLI stops the default pid file pr
   } finally {
     if (pid) {
       await stopProcessId(pid);
+    }
+  }
+});
+
+test("restart CLI stops a background process and starts a replacement", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const realTempDir = await fs.realpath(tempDir);
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "fake-pageindex.cjs");
+  const pidFile = path.join(realTempDir, "ragbox.pid");
+  const logFile = path.join(realTempDir, "ragbox.log");
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+  let firstPid: number | undefined;
+  let currentPid: number | undefined;
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nBody\n", "utf8");
+  await writeFakePageIndexScript(scriptPath, "restart ok");
+
+  const sharedArgs = [
+    docsDir,
+    "--output-dir",
+    outputDir,
+    "--pageindex-cli",
+    scriptPath,
+    "--pageindex-python",
+    process.execPath,
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--pid-file",
+    pidFile,
+    "--log-file",
+    logFile
+  ];
+
+  const start = spawnSync(process.execPath, [cliPath, "start", ...sharedArgs, "--background"], {
+    cwd: tempDir,
+    encoding: "utf8"
+  });
+
+  try {
+    assert.equal(start.status, 0, `STDOUT:\n${start.stdout}\nSTDERR:\n${start.stderr}`);
+    firstPid = Number((await fs.readFile(pidFile, "utf8")).trim());
+    currentPid = firstPid;
+    assert.ok(Number.isInteger(firstPid) && firstPid > 0);
+    const originalPid = firstPid;
+
+    const firstServing = await waitForFileMatch(logFile, /Serving ragbox at (http:\/\/127\.0\.0\.1:\d+)/, 10000);
+    await waitForFileMatch(logFile, /Reloaded serve index snapshot \(1\/1 ready\)/, 10000);
+    const firstHealth = await requestJson(`${firstServing[1]}/health`);
+    assert.equal(firstHealth.status, 200);
+
+    const logOffset = (await fs.readFile(logFile, "utf8")).length;
+    const restart = spawnSync(process.execPath, [cliPath, "restart", ...sharedArgs, "--json"], {
+      cwd: tempDir,
+      encoding: "utf8"
+    });
+    assert.equal(restart.status, 0, `STDOUT:\n${restart.stdout}\nSTDERR:\n${restart.stderr}`);
+
+    const restartOutput = JSON.parse(restart.stdout) as {
+      command: string;
+      start: { pid: number; logFile: string; pidFile?: string };
+      stop: { command: string; pid: number; stopped: boolean };
+    };
+    assert.equal(restartOutput.command, "restart");
+    assert.equal(restartOutput.stop.command, "stop");
+    assert.equal(restartOutput.stop.pid, originalPid);
+    assert.equal(restartOutput.stop.stopped, true);
+    assert.equal(restartOutput.start.logFile, logFile);
+    assert.equal(restartOutput.start.pidFile, pidFile);
+    assert.ok(Number.isInteger(restartOutput.start.pid) && restartOutput.start.pid > 0);
+    assert.notEqual(restartOutput.start.pid, originalPid);
+
+    currentPid = restartOutput.start.pid;
+    assert.equal(Number((await fs.readFile(pidFile, "utf8")).trim()), currentPid);
+    await waitForProcessGone(originalPid);
+
+    const secondServing = await waitForFileMatchAfter(logFile, /Serving ragbox at (http:\/\/127\.0\.0\.1:\d+)/, logOffset, 10000);
+    await waitForFileMatchAfter(logFile, /Reloaded serve index snapshot \(1\/1 ready\)/, logOffset, 10000);
+    const secondHealth = await requestJson(`${secondServing[1]}/health`);
+    assert.equal(secondHealth.status, 200);
+    assert.equal((secondHealth.body as { status: string }).status, "ready");
+  } finally {
+    if (currentPid) {
+      await stopProcessId(currentPid);
+    }
+    if (firstPid && firstPid !== currentPid) {
+      await stopProcessId(firstPid);
     }
   }
 });

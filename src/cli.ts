@@ -191,6 +191,8 @@ type StopCommandOptions = {
   timeoutMs?: number;
 };
 
+type RestartCommandOptions = StartCommandOptions & StopCommandOptions;
+
 type InitCommandOptions = {
   docsDir?: string;
   force?: boolean;
@@ -288,6 +290,13 @@ type StopCommandResult = {
   removedPidFile: boolean;
 };
 
+type RestartCommandResult = {
+  version: 1;
+  command: "restart";
+  stop: StopCommandResult;
+  start: BackgroundStartResult;
+};
+
 type DoctorCheck = {
   name: string;
   ok: boolean;
@@ -312,6 +321,45 @@ function addLlmOptions(command: Command): Command {
 
 function addProjectOptions(command: Command): Command {
   return command.option("--source <name>", "ragbox config source; query accepts comma-separated names");
+}
+
+function addStartLoopOptions(command: Command): Command {
+  return command
+    .option("--all-sources", "start every configured source")
+    .option("--auth-token <token>", "bearer token required for non-health endpoints")
+    .option("-c, --concurrency <number>", "PageIndex concurrency", parseConcurrency)
+    .option("--pageindex-cli <path>", "PageIndex script path")
+    .option("-o, --output-dir <folder>", "folder for ragbox index files")
+    .option("--pageindex-python <path>", "Python executable used to run PageIndex")
+    .option("--pageindex-runner <mode>", "PageIndex runner mode: auto, single, or batch", parsePageIndexRunner)
+    .option("--debounce-ms <ms>", "watch change debounce in milliseconds", parseDebounceMs)
+    .option("--health-file <path>", "write a watch health JSON file")
+    .option("--host <host>", "host to bind")
+    .option("--jsonl", "print stable JSON Lines start, watch, and index progress events")
+    .option("--lock-file <path>", "create an exclusive lock file while start is running")
+    .option("--port <number>", "port to bind", parseServePort)
+    .option("--retry-attempts <number>", "retry failed watch index runs", parseRetryAttempts)
+    .option("--retry-delay-ms <ms>", "delay between watch retries in milliseconds", parseRetryDelayMs)
+    .option("--staging", "index into a staging directory and promote it after a clean run")
+    .option("--staging-output-dir <folder>", "staging directory used with --staging")
+    .option("--webhook <url>", "POST watch events to a webhook URL");
+}
+
+function addBackgroundStartOptions(command: Command): Command {
+  return command
+    .option("--background", "run start as a detached background process")
+    .option("--log-file <path>", "background stdout/stderr log file; defaults to ./ragbox.log")
+    .option("--pid-file <path>", "background process id file; defaults to ./ragbox.pid")
+    .option("--no-pid-file", "do not write a background process id file");
+}
+
+function addRestartOptions(command: Command): Command {
+  return addStartLoopOptions(command)
+    .option("--log-file <path>", "background stdout/stderr log file; defaults to ./ragbox.log")
+    .option("--pid-file <path>", "pid file written by ragbox start --background", "ragbox.pid")
+    .option("--force", "send SIGKILL instead of SIGTERM")
+    .option("--timeout-ms <ms>", "time to wait for the process to exit", parseStopTimeoutMs)
+    .option("--json", "print a stable JSON result");
 }
 
 function getGlobalOptions(command: Command): { config?: string } {
@@ -951,7 +999,7 @@ async function closeStartHandles(watchHandles: WatchFolderHandle[], serveHandle:
 
 const BACKGROUND_CHILD_ENV = "RAGBOX_BACKGROUND_CHILD";
 
-function stripBackgroundStartArgs(args: string[]): string[] {
+function stripCliOptions(args: string[], flags: Set<string>, valueOptions: Set<string>): string[] {
   const stripped: string[] = [];
   let afterTerminator = false;
 
@@ -969,16 +1017,16 @@ function stripBackgroundStartArgs(args: string[]): string[] {
       continue;
     }
 
-    if (arg === "--background" || arg.startsWith("--background=")) {
+    if (flags.has(arg) || [...flags].some((flag) => arg.startsWith(`${flag}=`))) {
       continue;
     }
 
-    if (arg === "--pid-file" || arg === "--log-file") {
+    if (valueOptions.has(arg)) {
       index += 1;
       continue;
     }
 
-    if (arg === "--no-pid-file" || arg.startsWith("--pid-file=") || arg.startsWith("--log-file=")) {
+    if ([...valueOptions].some((option) => arg.startsWith(`${option}=`))) {
       continue;
     }
 
@@ -986,6 +1034,58 @@ function stripBackgroundStartArgs(args: string[]): string[] {
   }
 
   return stripped;
+}
+
+function stripBackgroundStartArgs(args: string[]): string[] {
+  return stripCliOptions(
+    args,
+    new Set(["--background", "--no-pid-file"]),
+    new Set(["--pid-file", "--log-file"])
+  );
+}
+
+function replaceSubcommandArg(args: string[], from: string, to: string): string[] {
+  const replaced = [...args];
+  let consumesValue = false;
+
+  for (let index = 0; index < replaced.length; index += 1) {
+    const arg = replaced[index];
+
+    if (arg === "--") {
+      break;
+    }
+
+    if (consumesValue) {
+      consumesValue = false;
+      continue;
+    }
+
+    if (arg === "--config") {
+      consumesValue = true;
+      continue;
+    }
+
+    if (arg.startsWith("--config=")) {
+      continue;
+    }
+
+    if (!arg.startsWith("-")) {
+      if (arg === from) {
+        replaced[index] = to;
+      }
+      break;
+    }
+  }
+
+  return replaced;
+}
+
+function restartStartArgs(args: string[]): string[] {
+  return stripCliOptions(
+    replaceSubcommandArg(args, "restart", "start"),
+    new Set(["--force", "--json"]),
+    new Set(["--timeout-ms", "--pid-file", "--log-file"])
+  );
 }
 
 async function writeBackgroundPidFile(pidFile: string | undefined, pid: number): Promise<string | undefined> {
@@ -999,7 +1099,7 @@ async function writeBackgroundPidFile(pidFile: string | undefined, pid: number):
   return resolvedPidFile;
 }
 
-async function launchBackgroundStart(commandOptions: StartCommandOptions): Promise<BackgroundStartResult> {
+async function launchBackgroundStart(commandOptions: StartCommandOptions, childArgs = stripBackgroundStartArgs(process.argv.slice(2))): Promise<BackgroundStartResult> {
   const cliScript = process.argv[1];
   if (!cliScript) {
     throw new Error("Cannot start ragbox in the background because the CLI script path is unavailable.");
@@ -1009,8 +1109,8 @@ async function launchBackgroundStart(commandOptions: StartCommandOptions): Promi
   await fs.mkdir(path.dirname(logFile), { recursive: true });
 
   const logFd = openSync(logFile, "a");
-  const childArgs = [cliScript, ...stripBackgroundStartArgs(process.argv.slice(2))];
-  const child = spawn(process.execPath, childArgs, {
+  const spawnArgs = [cliScript, ...childArgs];
+  const child = spawn(process.execPath, spawnArgs, {
     cwd: process.cwd(),
     detached: true,
     env: {
@@ -1147,6 +1247,38 @@ function printStopResult(result: StopCommandResult): void {
     return;
   }
   console.log(`Stopped ragbox (pid=${result.pid}, signal=${result.signal})`);
+}
+
+async function runRestartAction(commandOptions: RestartCommandOptions): Promise<RestartCommandResult> {
+  const pidFile = commandOptions.pidFile;
+  const stop = await runStopAction({
+    force: commandOptions.force,
+    pidFile,
+    timeoutMs: commandOptions.timeoutMs
+  });
+  const start = await launchBackgroundStart(
+    {
+      ...commandOptions,
+      background: true,
+      pidFile
+    },
+    restartStartArgs(process.argv.slice(2))
+  );
+
+  return {
+    version: 1,
+    command: "restart",
+    stop,
+    start
+  };
+}
+
+function printRestartResult(result: RestartCommandResult): void {
+  console.log(`Restarted ragbox (oldPid=${result.stop.pid}, newPid=${result.start.pid})`);
+  console.log(`log=${result.start.logFile}`);
+  if (result.start.pidFile) {
+    console.log(`pidFile=${result.start.pidFile}`);
+  }
 }
 
 function isPathLikeCommand(value: string): boolean {
@@ -1633,31 +1765,13 @@ async function main(): Promise<void> {
 
   addProjectOptions(
     addLlmOptions(
-      program
-        .command("start")
-        .argument("[folder]", "folder to index, watch, and serve")
-        .option("--all-sources", "start every configured source")
-        .option("--auth-token <token>", "bearer token required for non-health endpoints")
-        .option("--background", "run start as a detached background process")
-        .option("-c, --concurrency <number>", "PageIndex concurrency", parseConcurrency)
-        .option("--pageindex-cli <path>", "PageIndex script path")
-        .option("-o, --output-dir <folder>", "folder for ragbox index files")
-        .option("--pageindex-python <path>", "Python executable used to run PageIndex")
-        .option("--pageindex-runner <mode>", "PageIndex runner mode: auto, single, or batch", parsePageIndexRunner)
-        .option("--debounce-ms <ms>", "watch change debounce in milliseconds", parseDebounceMs)
-        .option("--health-file <path>", "write a watch health JSON file")
-        .option("--host <host>", "host to bind")
-        .option("--jsonl", "print stable JSON Lines start, watch, and index progress events")
-        .option("--log-file <path>", "background stdout/stderr log file; defaults to ./ragbox.log")
-        .option("--lock-file <path>", "create an exclusive lock file while start is running")
-        .option("--pid-file <path>", "background process id file; defaults to ./ragbox.pid")
-        .option("--no-pid-file", "do not write a background process id file")
-        .option("--port <number>", "port to bind", parseServePort)
-        .option("--retry-attempts <number>", "retry failed watch index runs", parseRetryAttempts)
-        .option("--retry-delay-ms <ms>", "delay between watch retries in milliseconds", parseRetryDelayMs)
-        .option("--staging", "index into a staging directory and promote it after a clean run")
-        .option("--staging-output-dir <folder>", "staging directory used with --staging")
-        .option("--webhook <url>", "POST watch events to a webhook URL")
+      addBackgroundStartOptions(
+        addStartLoopOptions(
+          program
+            .command("start")
+            .argument("[folder]", "folder to index, watch, and serve")
+        )
+      )
     )
   )
     .action(async (folder: string | undefined, commandOptions: StartCommandOptions, command: Command) => {
@@ -1684,6 +1798,25 @@ async function main(): Promise<void> {
         return;
       }
       printStopResult(result);
+    });
+
+  addProjectOptions(
+    addLlmOptions(
+      addRestartOptions(
+        program
+          .command("restart")
+          .description("restart a background ragbox start process")
+          .argument("[folder]", "folder to index, watch, and serve after restart")
+      )
+    )
+  )
+    .action(async (_folder: string | undefined, commandOptions: RestartCommandOptions) => {
+      const result = await runRestartAction(commandOptions);
+      if (commandOptions.json) {
+        writeJson(result);
+        return;
+      }
+      printRestartResult(result);
     });
 
   addProjectOptions(

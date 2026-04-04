@@ -74,6 +74,7 @@ ragbox start
 
 ```bash
 ragbox start --background
+ragbox restart
 ragbox stop
 ```
 
@@ -466,6 +467,18 @@ ragbox stop --force
 
 默认发送 `SIGTERM`，等待进程退出后删除 pid 文件。传 `--force` 时发送 `SIGKILL`。
 
+### `ragbox restart [folder]`
+
+读取 pid 文件，停止已有的 `ragbox start --background` 进程，然后用当前命令重新启动一个新的后台 `start` 进程。
+
+```bash
+ragbox restart
+ragbox restart --pid-file /var/run/ragbox.pid --log-file /var/log/ragbox.log
+ragbox --config ./ragbox.config.prod.json restart
+```
+
+`restart` 是 `ragbox stop && ragbox start --background` 的便捷封装。它不会记住上一次 `start --background` 临时传入的参数；长期稳定配置建议放在 `ragbox.config.json`，或者在 `restart` 时重新传入同样的覆盖参数。
+
 ### `ragbox serve [target]`
 
 启动一个前台 HTTP 服务，供外部系统通过 REST API 查询文档。使用前先通过 `ragbox index` 生成索引，或者用 `ragbox watch` 持续刷新索引。
@@ -646,6 +659,7 @@ ragbox --config ./ragbox.config.prod.json start \
 ```
 
 ```bash
+ragbox --config ./ragbox.config.prod.json restart
 ragbox stop
 ```
 

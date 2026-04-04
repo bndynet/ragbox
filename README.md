@@ -76,6 +76,7 @@ For a quick detached local run, use `--background`:
 
 ```bash
 ragbox start --background
+ragbox restart
 ragbox stop
 ```
 
@@ -461,6 +462,18 @@ ragbox stop --force
 
 By default, `stop` sends `SIGTERM`, waits for the process to exit, and removes the pid file. Use `--force` to send `SIGKILL`.
 
+### `ragbox restart [folder]`
+
+Restarts a `ragbox start --background` process by reading the pid file, stopping that process, and launching a new detached `start` process from the current command.
+
+```bash
+ragbox restart
+ragbox restart --pid-file /var/run/ragbox.pid --log-file /var/log/ragbox.log
+ragbox --config ./ragbox.config.prod.json restart
+```
+
+`restart` is a convenience wrapper for `ragbox stop && ragbox start --background`. It does not remember ad hoc flags from the previous `start --background`; keep durable settings in `ragbox.config.json`, or pass the same overrides to `restart`.
+
 ### `ragbox serve [target]`
 
 Starts a foreground HTTP server for external systems. Index first with `ragbox index`, or keep the index fresh with `ragbox watch`.
@@ -637,6 +650,7 @@ ragbox --config ./ragbox.config.prod.json start \
 ```
 
 ```bash
+ragbox --config ./ragbox.config.prod.json restart
 ragbox stop
 ```
 
