@@ -32,7 +32,8 @@ ragbox setup pageindex
   "version": 1,
   "pageIndex": {
     "cli": "./.ragbox/PageIndex/run_pageindex.py",
-    "python": "./.ragbox/pageindex-venv/bin/python"
+    "python": "./.ragbox/pageindex-venv/bin/python",
+    "concurrency": 1
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
@@ -148,7 +149,8 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
   "version": 1,
   "pageIndex": {
     "cli": "./.ragbox/PageIndex/run_pageindex.py",
-    "python": "./.ragbox/pageindex-venv/bin/python"
+    "python": "./.ragbox/pageindex-venv/bin/python",
+    "concurrency": 1
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
@@ -195,7 +197,8 @@ ragbox --config ./ragbox.config.json index
   "version": 1,
   "pageIndex": {
     "cli": "./.ragbox/PageIndex/run_pageindex.py",
-    "python": "./.ragbox/pageindex-venv/bin/python"
+    "python": "./.ragbox/pageindex-venv/bin/python",
+    "concurrency": 1
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
@@ -257,7 +260,7 @@ Server 端使用时，建议把稳定配置集中写在 `ragbox.config.json`：P
 | PageIndex 脚本 | `PAGEINDEX_CLI` | `ragbox setup pageindex` 写入配置 | `index`, `watch`, `start` | 索引时必填 |
 | Python 可执行文件 | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch`, `start` | `python3` |
 | 输出目录 | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch`, `start` | `<folder>/.pageindex` |
-| 并发数 | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch`, `start` | `1` |
+| 并发数 | `PAGEINDEX_CONCURRENCY` | `pageIndex.concurrency`, `--concurrency` | `index`, `watch`, `start` | `1` |
 | PageIndex runner | `PAGEINDEX_RUNNER` | `--pageindex-runner` | `index`, `watch`, `start` | `auto` |
 | API Base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API Key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | query 必填，PageIndex 通常也需要 |
@@ -625,6 +628,7 @@ ragbox query ./.ragbox-index "..."
   "pageIndex": {
     "cli": "/opt/PageIndex/run_pageindex.py",
     "python": "/opt/pageindex-venv/bin/python",
+    "concurrency": 1,
     "runner": "auto"
   },
   "llm": {

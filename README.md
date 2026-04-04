@@ -34,7 +34,8 @@ Before continuing, edit `ragbox.config.json`: add your model settings and point 
   "version": 1,
   "pageIndex": {
     "cli": "./.ragbox/PageIndex/run_pageindex.py",
-    "python": "./.ragbox/pageindex-venv/bin/python"
+    "python": "./.ragbox/pageindex-venv/bin/python",
+    "concurrency": 1
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
@@ -150,7 +151,8 @@ The default setup needs:
   "version": 1,
   "pageIndex": {
     "cli": "./.ragbox/PageIndex/run_pageindex.py",
-    "python": "./.ragbox/pageindex-venv/bin/python"
+    "python": "./.ragbox/pageindex-venv/bin/python",
+    "concurrency": 1
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
@@ -197,7 +199,8 @@ For multiple documentation directories, name each one under `sources`. This is u
   "version": 1,
   "pageIndex": {
     "cli": "./.ragbox/PageIndex/run_pageindex.py",
-    "python": "./.ragbox/pageindex-venv/bin/python"
+    "python": "./.ragbox/pageindex-venv/bin/python",
+    "concurrency": 1
   },
   "llm": {
     "baseUrl": "https://api.openai.com/v1",
@@ -259,7 +262,7 @@ Resolution order is command-line flags, then `ragbox.config.json`, then environm
 | PageIndex script | `PAGEINDEX_CLI` | `ragbox setup pageindex` writes config | `index`, `watch`, `start` | required when indexing |
 | Python executable | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch`, `start` | `python3` |
 | Output directory | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch`, `start` | `<folder>/.pageindex` |
-| Concurrency | `PAGEINDEX_CONCURRENCY` | `--concurrency` | `index`, `watch`, `start` | `1` |
+| Concurrency | `PAGEINDEX_CONCURRENCY` | `pageIndex.concurrency`, `--concurrency` | `index`, `watch`, `start` | `1` |
 | PageIndex runner | `PAGEINDEX_RUNNER` | `--pageindex-runner` | `index`, `watch`, `start` | `auto` |
 | API base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
 | API key | `OPENAI_API_KEY` | `--api-key` | `index`, `watch`, `query` | required for query and usually PageIndex |
@@ -616,6 +619,7 @@ Example private server config:
   "pageIndex": {
     "cli": "/opt/PageIndex/run_pageindex.py",
     "python": "/opt/pageindex-venv/bin/python",
+    "concurrency": 1,
     "runner": "auto"
   },
   "llm": {
