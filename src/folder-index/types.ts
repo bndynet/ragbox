@@ -52,6 +52,7 @@ export type PageIndexOptions = {
   pythonPath?: string;
   cliPath?: string;
   pageIndexRunner?: PageIndexRunner;
+  retriever?: Retriever;
   model?: string;
   baseUrl?: string;
   apiKey?: string;
@@ -403,6 +404,58 @@ export type QueryTrace = {
   context: QueryContextTrace;
   answer?: QueryAnswerTrace;
   failures: QueryTraceFailure[];
+};
+
+export type RetrievalCandidate = {
+  docId: string;
+  path: string;
+  indexPath: string;
+  nodeId: string;
+  reference: string;
+  retriever: string;
+  reason: string;
+  selectionReason: QuerySelectedNode["selectionReason"];
+  score?: number;
+};
+
+export type RetrievedDocumentIndex = {
+  docId: string;
+  path: string;
+  indexPath: string;
+  pageIndexJson: unknown;
+};
+
+export type RetrieverContext = {
+  rootDir: string;
+  outputDir?: string;
+  manifest: Manifest;
+  rootTree: RootTreeNode;
+};
+
+export type RetrievalTrace = {
+  documentSelection?: QueryDocumentSelectionTrace;
+  nodeSelections: QueryNodeSelectionTrace[];
+  failures: QueryTraceFailure[];
+};
+
+export type RetrievalTimings = {
+  selectDocuments: number;
+  selectNodes: number;
+};
+
+export type RetrievalResult = {
+  retriever: string;
+  candidates: RetrievalCandidate[];
+  documentIndexes?: RetrievedDocumentIndex[];
+  selectedDocuments: QuerySelectedDocument[];
+  warnings: string[];
+  trace: RetrievalTrace;
+  timings: RetrievalTimings;
+};
+
+export type Retriever = {
+  name: string;
+  retrieve: (question: string, context: RetrieverContext, options: PageIndexOptions) => Promise<RetrievalResult>;
 };
 
 export type QueryResult = {

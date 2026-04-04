@@ -7,6 +7,7 @@ export * from "./folder-index/multi-query";
 export * from "./folder-index/pageindex-runner";
 export * from "./folder-index/path-utils";
 export * from "./folder-index/query";
+export * from "./folder-index/retrieval";
 export * from "./folder-index/root-tree";
 export * from "./folder-index/scan";
 export * from "./folder-index/types";

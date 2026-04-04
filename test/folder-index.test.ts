@@ -570,6 +570,7 @@ test("SDK root exports only product API plus advanced namespace", () => {
   assert.equal(typeof ragbox.startServe, "function");
   assert.equal(typeof ragbox.advanced.indexFolder, "function");
   assert.equal(typeof ragbox.advanced.queryFolder, "function");
+  assert.equal(typeof ragbox.advanced.createTreeRetriever, "function");
 });
 
 test("createIndex indexes docs through product SDK options", async () => {
