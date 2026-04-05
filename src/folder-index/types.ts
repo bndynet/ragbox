@@ -320,7 +320,7 @@ export type QuerySelectedDocument = {
   title?: string;
   status?: DocumentStatus;
   indexPath?: string;
-  selectionReason: "selected_by_document_planner";
+  selectionReason: "selected_by_document_planner" | "matched_query_text";
   skipReason?: "missing_root_tree_document" | "missing_manifest_record" | "missing_index_path" | "document_not_ready";
 };
 
@@ -456,6 +456,12 @@ export type RetrievalResult = {
 export type Retriever = {
   name: string;
   retrieve: (question: string, context: RetrieverContext, options: PageIndexOptions) => Promise<RetrievalResult>;
+};
+
+export type TreeLexicalRetrieverOptions = {
+  maxLexicalCandidates?: number;
+  maxLexicalDocuments?: number;
+  minLexicalScore?: number;
 };
 
 export type QueryResult = {

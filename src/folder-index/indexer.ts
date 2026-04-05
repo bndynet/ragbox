@@ -13,6 +13,7 @@ import {
   writeManifest
 } from "./manifest";
 import { runPageIndex, readPageIndexSummary, runPageIndexBatchPool } from "./pageindex-runner";
+import { writeLexicalIndex } from "./lexical-index";
 import { runWithConcurrency } from "./queue";
 import { generateRootTree, writeRootTree } from "./root-tree";
 import { scanMarkdownFiles } from "./scan";
@@ -207,6 +208,7 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
 
   await writeManifest(rootDir, manifest, config.outputDir);
   await writeRootTree(rootDir, rootTree, config.outputDir);
+  await writeLexicalIndex(rootDir, manifest, config.outputDir);
   await writeFileState(rootDir, manifest, config.outputDir);
   reportProgress(config, {
     type: "write",

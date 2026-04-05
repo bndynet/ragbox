@@ -784,6 +784,24 @@ const { advanced } = require("@bndynet/ragbox");
 const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-index");
 ```
 
+For custom integrations that need stronger exact-token recall, `advanced.queryFolder` can opt into the tree plus lexical retriever. The default `queryIndex`, CLI, and HTTP API still use the standard tree retriever.
+
+```js
+const { advanced } = require("@bndynet/ragbox");
+
+const result = await advanced.queryFolder(
+  "/var/lib/ragbox/docs-index",
+  "Where is OPENAI_API_KEY configured?",
+  {
+    llmClient,
+    model: "internal-docs-model",
+    retriever: advanced.createTreeLexicalRetriever({
+      maxLexicalCandidates: 12
+    })
+  }
+);
+```
+
 ## What Happens During Query
 
 At a high level, `ragbox` keeps the structure of your docs instead of flattening everything into anonymous chunks:

@@ -11,6 +11,7 @@ import type { LlmChatRequest, LlmClient } from "../src/index";
 import { resolveRagboxConfig } from "../src/config-file";
 import { loadPageIndexConfig } from "../src/folder-index/config";
 import { hashFile } from "../src/folder-index/hash";
+import { LEXICAL_INDEX_FILE, writeLexicalIndex } from "../src/folder-index/lexical-index";
 import { chatCompletionsUrl } from "../src/folder-index/llm-client";
 import { diffManifest, getPageIndexPath, resolveDocumentIndexPath } from "../src/folder-index/manifest";
 import { queryMultipleIndexes } from "../src/folder-index/multi-query";
@@ -571,6 +572,8 @@ test("SDK root exports only product API plus advanced namespace", () => {
   assert.equal(typeof ragbox.advanced.indexFolder, "function");
   assert.equal(typeof ragbox.advanced.queryFolder, "function");
   assert.equal(typeof ragbox.advanced.createTreeRetriever, "function");
+  assert.equal(typeof ragbox.advanced.createTreeLexicalRetriever, "function");
+  assert.equal("createLexicalRetriever" in ragbox.advanced, false);
 });
 
 test("createIndex indexes docs through product SDK options", async () => {
@@ -609,6 +612,16 @@ test("createIndex indexes docs through product SDK options", async () => {
   });
   assert.ok(progress.includes("scan"));
   assert.ok(progress.includes("write"));
+  const lexicalIndex = JSON.parse(await fs.readFile(path.join(outputDir, LEXICAL_INDEX_FILE), "utf8")) as {
+    version: number;
+    entries: Array<{ path: string; nodeId: string; terms: string[] }>;
+  };
+  assert.equal(lexicalIndex.version, 1);
+  assert.deepEqual(
+    lexicalIndex.entries.map((entry) => [entry.path, entry.nodeId]),
+    [["guide.md", "n1"]]
+  );
+  assert.ok(lexicalIndex.entries[0]?.terms.includes("body"));
 });
 
 test("createIndex reads ragbox config file options", async () => {
@@ -646,6 +659,52 @@ test("createIndex reads ragbox config file options", async () => {
 
   assert.equal(result.outputDir, outputDir);
   assert.equal(result.counts.ready, 1);
+});
+
+test("indexFolder writes lexical index entries for ready documents only", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const scriptPath = path.join(tempDir, "selective-pageindex.cjs");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "good.md"), "# Good\n\nGOOD_TOKEN appears here.\n", "utf8");
+  await fs.writeFile(path.join(docsDir, "bad.md"), "# Bad\n\nBAD_TOKEN appears here.\n", "utf8");
+  await writeExecutable(
+    scriptPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const mdPath = args[args.indexOf("--md_path") + 1];
+const outputPath = args[args.indexOf("--output") + 1];
+if (path.basename(mdPath) === "bad.md") {
+  console.error("intentional failure");
+  process.exit(1);
+}
+fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+fs.writeFileSync(outputPath, JSON.stringify({
+  node_id: "root",
+  nodes: [{ node_id: "n1", title: "Good", text: "GOOD_TOKEN appears here." }]
+}));
+`
+  );
+
+  await ragbox.advanced.indexFolder(docsDir, {
+    outputDir,
+    cliPath: scriptPath,
+    outputArg: "--output",
+    pythonPath: process.execPath,
+    pageIndexRunner: "single"
+  });
+
+  const lexicalIndex = JSON.parse(await fs.readFile(path.join(outputDir, LEXICAL_INDEX_FILE), "utf8")) as {
+    entries: Array<{ path: string; terms: string[] }>;
+  };
+
+  assert.deepEqual(lexicalIndex.entries.map((entry) => entry.path), ["good.md"]);
+  assert.ok(lexicalIndex.entries[0]?.terms.includes("good_token"));
+  assert.equal(lexicalIndex.entries.some((entry) => entry.terms.includes("bad_token")), false);
 });
 
 test("createIndex reindexes stale document index artifacts", async () => {
@@ -2893,6 +2952,135 @@ test("queryFolder adds exact text node matches when the planner selects a parent
   assert.deepEqual(result.sources.map((source) => source.reference), ["watch.md#0000", "watch.md#0001"]);
   assert.match(calls[2]?.messages[0]?.content ?? "", /RAGBOX_START_WATCH_VERIFICATION_V2/);
   assert.match(result.answer, /RAGBOX_START_WATCH_VERIFICATION_V2/);
+});
+
+test("tree lexical retriever supplements documents missed by the tree planner", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const rootDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const indexDir = path.join(outputDir, "indexes");
+  const authDocId = "doc:auth";
+  const envDocId = "doc:env";
+  const authIndexPath = "indexes/auth.pageindex.json";
+  const envIndexPath = "indexes/env.pageindex.json";
+  const calls: LlmChatRequest[] = [];
+  const llmClient = queuedLlmClient(
+    [
+      JSON.stringify({ documents: [authDocId] }),
+      JSON.stringify({ nodes: ["a1"] }),
+      "Set OPENAI_API_KEY in private config. Source: env.md#e1"
+    ],
+    calls
+  );
+  const manifest: Manifest = {
+    version: 1,
+    rootDir,
+    generatedAt: "2026-01-01T00:00:00.000Z",
+    documents: [
+      {
+        docId: authDocId,
+        path: "auth.md",
+        absolutePath: path.join(rootDir, "auth.md"),
+        contentHash: "sha256:auth",
+        size: 10,
+        mtimeMs: 1,
+        title: "Auth",
+        summary: "Authentication overview",
+        indexPath: authIndexPath,
+        status: "ready"
+      },
+      {
+        docId: envDocId,
+        path: "env.md",
+        absolutePath: path.join(rootDir, "env.md"),
+        contentHash: "sha256:env",
+        size: 10,
+        mtimeMs: 1,
+        title: "Environment",
+        summary: "Runtime environment variables",
+        indexPath: envIndexPath,
+        status: "ready"
+      }
+    ]
+  };
+  const rootTree = {
+    node_id: "root",
+    type: "root",
+    title: "docs",
+    children: [
+      {
+        node_id: authDocId,
+        type: "document",
+        title: "Auth",
+        summary: "Authentication overview",
+        path: "auth.md",
+        index_path: authIndexPath
+      },
+      {
+        node_id: envDocId,
+        type: "document",
+        title: "Environment",
+        summary: "Runtime environment variables",
+        path: "env.md",
+        index_path: envIndexPath
+      }
+    ]
+  };
+
+  await fs.mkdir(indexDir, { recursive: true });
+  await fs.writeFile(path.join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`, "utf8");
+  await fs.writeFile(path.join(outputDir, "root-tree.json"), `${JSON.stringify(rootTree)}\n`, "utf8");
+  await fs.writeFile(
+    path.join(outputDir, authIndexPath),
+    `${JSON.stringify({ node_id: "root", nodes: [{ node_id: "a1", title: "Auth Overview", text: "Auth overview." }] })}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(outputDir, envIndexPath),
+    `${JSON.stringify({ node_id: "root", nodes: [{ node_id: "e1", title: "API Key", text: "Set OPENAI_API_KEY in private config." }] })}\n`,
+    "utf8"
+  );
+  await writeLexicalIndex(rootDir, manifest, outputDir);
+
+  const result = await queryFolder(outputDir, "OPENAI_API_KEY 在哪里配置？", {
+    llmClient,
+    model: "test-model",
+    retriever: ragbox.advanced.createTreeLexicalRetriever({
+      maxLexicalCandidates: 4
+    })
+  });
+
+  assert.deepEqual(result.sources.map((source) => source.reference), ["auth.md#a1", "env.md#e1"]);
+  assert.deepEqual(result.selectedDocuments.map((document) => [document.docId, document.selectionReason]), [
+    [authDocId, "selected_by_document_planner"],
+    [envDocId, "matched_query_text"]
+  ]);
+  assert.match(calls[2]?.messages[0]?.content ?? "", /OPENAI_API_KEY/);
+  assert.equal(calls.length, 3);
+});
+
+test("tree lexical retriever falls back to tree when lexical index is missing", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const fixture = await writeValidIndexFixture(tempDir);
+  const calls: LlmChatRequest[] = [];
+  const llmClient = queuedLlmClient(
+    [
+      JSON.stringify({ documents: [fixture.docId] }),
+      JSON.stringify({ nodes: ["n1"] }),
+      "Auth answer. Source: auth.md#n1"
+    ],
+    calls
+  );
+
+  const result = await queryFolder(fixture.outputDir, "How does auth work?", {
+    llmClient,
+    model: "test-model",
+    retriever: ragbox.advanced.createTreeLexicalRetriever()
+  });
+
+  assert.deepEqual(result.sources.map((source) => source.reference), ["auth.md#n1"]);
+  assert.match(result.warnings.join("\n"), /Lexical index is unavailable/);
+  assert.equal(calls.length, 3);
 });
 
 test("queryFolder trace exposes raw selections, context size, and answer diagnostics", async () => {

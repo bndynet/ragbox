@@ -793,6 +793,24 @@ const { advanced } = require("@bndynet/ragbox");
 const location = await advanced.resolveQueryIndexLocation("/var/lib/ragbox/docs-index");
 ```
 
+如果定制集成需要增强精确 token 召回，可以在 `advanced.queryFolder` 中显式启用 tree plus lexical retriever。默认 `queryIndex`、CLI 和 HTTP API 仍然使用标准 tree retriever。
+
+```js
+const { advanced } = require("@bndynet/ragbox");
+
+const result = await advanced.queryFolder(
+  "/var/lib/ragbox/docs-index",
+  "OPENAI_API_KEY 是在哪里配置的？",
+  {
+    llmClient,
+    model: "internal-docs-model",
+    retriever: advanced.createTreeLexicalRetriever({
+      maxLexicalCandidates: 12
+    })
+  }
+);
+```
+
 ## 查询时发生了什么
 
 简单说，`ragbox` 会保留文档结构，而不是一开始就把所有内容切成匿名 chunk：

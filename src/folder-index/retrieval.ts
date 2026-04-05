@@ -1,4 +1,5 @@
 import { chatCompletion } from "./llm-client";
+import { readLexicalIndex, searchLexicalIndex } from "./lexical-index";
 import { resolveDocumentIndexPath } from "./manifest";
 import { runQueryStage } from "./query-stage";
 import {
@@ -18,7 +19,8 @@ import {
   Retriever,
   RetrieverContext,
   RetrievalResult,
-  RootTreeNode
+  RootTreeNode,
+  TreeLexicalRetrieverOptions
 } from "./types";
 
 type DocumentSelection = {
@@ -112,6 +114,14 @@ function documentSkipReason(
     return "document_not_ready";
   }
   return undefined;
+}
+
+function lexicalOptions(options: TreeLexicalRetrieverOptions = {}): Required<TreeLexicalRetrieverOptions> {
+  return {
+    maxLexicalCandidates: options.maxLexicalCandidates ?? 12,
+    maxLexicalDocuments: options.maxLexicalDocuments ?? 6,
+    minLexicalScore: options.minLexicalScore ?? 1
+  };
 }
 
 export function createTreeRetriever(): Retriever {
@@ -230,6 +240,127 @@ export function createTreeRetriever(): Retriever {
         warnings,
         trace,
         timings
+      };
+    }
+  };
+}
+
+async function retrieveLexicalCandidates(
+  question: string,
+  context: RetrieverContext,
+  options: Required<TreeLexicalRetrieverOptions>
+): Promise<Pick<RetrievalResult, "candidates" | "selectedDocuments" | "warnings">> {
+  const lexicalIndex = await readLexicalIndex(context.rootDir, context.outputDir);
+  if (!lexicalIndex) {
+    return {
+      candidates: [],
+      selectedDocuments: [],
+      warnings: ["Lexical index is unavailable; run index again to enable lexical retrieval."]
+    };
+  }
+
+  const manifestByDocId = new Map<string, DocumentRecord>(context.manifest.documents.map((record) => [record.docId, record]));
+  const matches = searchLexicalIndex(lexicalIndex, question, {
+    maxCandidates: options.maxLexicalCandidates,
+    maxDocuments: options.maxLexicalDocuments,
+    minScore: options.minLexicalScore
+  });
+  const selectedDocumentIds = new Set<string>();
+  const selectedDocuments: QuerySelectedDocument[] = [];
+
+  for (const match of matches) {
+    if (selectedDocumentIds.has(match.docId)) {
+      continue;
+    }
+    const record = manifestByDocId.get(match.docId);
+    selectedDocuments.push({
+      docId: match.docId,
+      available: Boolean(record && record.status === "ready"),
+      path: record?.path ?? match.path,
+      title: record?.title,
+      status: record?.status,
+      indexPath: record?.indexPath ?? match.indexPath,
+      selectionReason: "matched_query_text",
+      ...(!record
+        ? { skipReason: "missing_manifest_record" as const }
+        : record.status !== "ready"
+          ? { skipReason: "document_not_ready" as const }
+          : {})
+    });
+    selectedDocumentIds.add(match.docId);
+  }
+
+  return {
+    candidates: matches.map((match) => ({
+      docId: match.docId,
+      path: match.path,
+      indexPath: match.indexPath,
+      nodeId: match.nodeId,
+      reference: `${match.path}#${match.nodeId}`,
+      retriever: "lexical",
+      reason: `matched_query_text:${match.matchedTerms.join(",")}`,
+      selectionReason: "matched_query_text",
+      score: match.score
+    })),
+    selectedDocuments,
+    warnings: []
+  };
+}
+
+export function createTreeLexicalRetriever(options: TreeLexicalRetrieverOptions = {}): Retriever {
+  const normalizedOptions = lexicalOptions(options);
+  const treeRetriever = createTreeRetriever();
+
+  return {
+    name: "tree+lexical",
+    async retrieve(question: string, context: RetrieverContext, retrieverOptions: PageIndexOptions): Promise<RetrievalResult> {
+      const treeResult = await treeRetriever.retrieve(question, context, retrieverOptions);
+      const lexicalStartedAt = Date.now();
+      let lexicalResult: Pick<RetrievalResult, "candidates" | "selectedDocuments" | "warnings">;
+
+      try {
+        lexicalResult = await retrieveLexicalCandidates(question, context, normalizedOptions);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        lexicalResult = {
+          candidates: [],
+          selectedDocuments: [],
+          warnings: [`Lexical index is unavailable: ${message}`]
+        };
+      }
+
+      const seenCandidates = new Set(treeResult.candidates.map((candidate) => `${candidate.docId}:${candidate.nodeId}`));
+      const candidates = [...treeResult.candidates];
+      for (const candidate of lexicalResult.candidates) {
+        const key = `${candidate.docId}:${candidate.nodeId}`;
+        if (seenCandidates.has(key)) {
+          continue;
+        }
+        candidates.push(candidate);
+        seenCandidates.add(key);
+      }
+
+      const seenDocuments = new Set(treeResult.selectedDocuments.map((document) => document.docId));
+      const selectedDocuments = [...treeResult.selectedDocuments];
+      for (const selectedDocument of lexicalResult.selectedDocuments) {
+        if (seenDocuments.has(selectedDocument.docId)) {
+          continue;
+        }
+        selectedDocuments.push(selectedDocument);
+        seenDocuments.add(selectedDocument.docId);
+      }
+
+      return {
+        retriever: "tree+lexical",
+        candidates,
+        documentIndexes: treeResult.documentIndexes,
+        selectedDocuments,
+        warnings: [...treeResult.warnings, ...lexicalResult.warnings],
+        trace: treeResult.trace,
+        timings: {
+          selectDocuments: treeResult.timings.selectDocuments,
+          selectNodes: treeResult.timings.selectNodes + (Date.now() - lexicalStartedAt)
+        }
       };
     }
   };
