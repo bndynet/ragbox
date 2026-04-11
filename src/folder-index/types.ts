@@ -53,6 +53,7 @@ export type PageIndexOptions = {
   cliPath?: string;
   pageIndexRunner?: PageIndexRunner;
   retriever?: Retriever;
+  lexicalIndex?: LexicalIndexOptions;
   model?: string;
   baseUrl?: string;
   apiKey?: string;
@@ -462,6 +463,12 @@ export type TreeLexicalRetrieverOptions = {
   maxLexicalCandidates?: number;
   maxLexicalDocuments?: number;
   minLexicalScore?: number;
+};
+
+export type LexicalIndexOptions = {
+  minTermLength?: number;
+  maxTermLength?: number;
+  maxTermsPerNode?: number;
 };
 
 export type QueryResult = {

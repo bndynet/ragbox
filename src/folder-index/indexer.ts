@@ -208,7 +208,7 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
 
   await writeManifest(rootDir, manifest, config.outputDir);
   await writeRootTree(rootDir, rootTree, config.outputDir);
-  await writeLexicalIndex(rootDir, manifest, config.outputDir);
+  await writeLexicalIndex(rootDir, manifest, config.outputDir, config.lexicalIndex);
   await writeFileState(rootDir, manifest, config.outputDir);
   reportProgress(config, {
     type: "write",

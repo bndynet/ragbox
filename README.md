@@ -323,6 +323,8 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 
 `index` scans `**/*.md` and `**/*.mdx`, hashes files, re-indexes new/modified/failed files, skips unchanged ready files, and removes deleted files from the manifest.
 
+The same run also writes `lexical-index.json` next to `manifest.json` and `root-tree.json`. It stores local exact-token terms for ready PageIndex nodes. The standard `query`, `queryIndex`, CLI, and HTTP API paths do not use this sidecar; it is read only when an advanced integration opts into the tree plus lexical retriever.
+
 If any document fails, normal output keeps the counts on stdout and prints failed document paths plus PageIndex errors on stderr.
 
 Use `--json` to print a versioned machine-readable result with output paths, counts, and failed document details:
@@ -801,6 +803,21 @@ const result = await advanced.queryFolder(
   }
 );
 ```
+
+To cap lexical index size for a custom integration, pass `lexicalIndex` when building the index with the lower-level `advanced.indexFolder` API:
+
+```js
+await advanced.indexFolder("/srv/app/docs", {
+  outputDir: "/var/lib/ragbox/docs-index",
+  lexicalIndex: {
+    minTermLength: 2,
+    maxTermLength: 80,
+    maxTermsPerNode: 128
+  }
+});
+```
+
+`minTermLength` defaults to `2`. `maxTermLength` and `maxTermsPerNode` are unlimited unless set. These are lower-level SDK indexing options; they are not CLI flags or `ragbox.config.json` settings yet.
 
 ## What Happens During Query
 

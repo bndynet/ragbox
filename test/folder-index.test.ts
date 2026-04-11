@@ -11,7 +11,7 @@ import type { LlmChatRequest, LlmClient } from "../src/index";
 import { resolveRagboxConfig } from "../src/config-file";
 import { loadPageIndexConfig } from "../src/folder-index/config";
 import { hashFile } from "../src/folder-index/hash";
-import { LEXICAL_INDEX_FILE, writeLexicalIndex } from "../src/folder-index/lexical-index";
+import { extractLexicalTerms, LEXICAL_INDEX_FILE, writeLexicalIndex } from "../src/folder-index/lexical-index";
 import { chatCompletionsUrl } from "../src/folder-index/llm-client";
 import { diffManifest, getPageIndexPath, resolveDocumentIndexPath } from "../src/folder-index/manifest";
 import { queryMultipleIndexes } from "../src/folder-index/multi-query";
@@ -705,6 +705,13 @@ fs.writeFileSync(outputPath, JSON.stringify({
   assert.deepEqual(lexicalIndex.entries.map((entry) => entry.path), ["good.md"]);
   assert.ok(lexicalIndex.entries[0]?.terms.includes("good_token"));
   assert.equal(lexicalIndex.entries.some((entry) => entry.terms.includes("bad_token")), false);
+});
+
+test("extractLexicalTerms supports optional size limits", () => {
+  assert.deepEqual(extractLexicalTerms("a bb ccc dddd"), ["bb", "ccc", "dddd"]);
+  assert.deepEqual(extractLexicalTerms("a bb ccc dddd", { maxTermLength: 3 }), ["bb", "ccc"]);
+  assert.deepEqual(extractLexicalTerms("a bb ccc dddd", { maxTermsPerNode: 2 }), ["bb", "ccc"]);
+  assert.deepEqual(extractLexicalTerms("a bb ccc", { minTermLength: 1 }), ["bb", "ccc"]);
 });
 
 test("createIndex reindexes stale document index artifacts", async () => {

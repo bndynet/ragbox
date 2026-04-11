@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { atomicWriteJson, getPageIndexPath, resolveDocumentIndexPath } from "./manifest";
 import { buildNodeMap, extractNodeText, isObject, JsonObject, readJson } from "./query-utils";
-import { DocumentRecord, Manifest } from "./types";
+import { DocumentRecord, LexicalIndexOptions, Manifest } from "./types";
 
 export const LEXICAL_INDEX_FILE = "lexical-index.json";
 
@@ -50,15 +50,28 @@ const STOP_WORDS = new Set([
   "with"
 ]);
 
-function addTerm(terms: Set<string>, value: string): void {
+const DEFAULT_MIN_TERM_LENGTH = 2;
+
+function normalizeOptions(options: LexicalIndexOptions = {}): Required<Pick<LexicalIndexOptions, "minTermLength">> & LexicalIndexOptions {
+  return {
+    ...options,
+    minTermLength: options.minTermLength ?? DEFAULT_MIN_TERM_LENGTH
+  };
+}
+
+function addTerm(terms: Set<string>, value: string, options: Required<Pick<LexicalIndexOptions, "minTermLength">> & LexicalIndexOptions): void {
   const term = value.toLowerCase().trim();
-  if (term.length < 2 || STOP_WORDS.has(term)) {
+  if (term.length < options.minTermLength || STOP_WORDS.has(term)) {
+    return;
+  }
+  if (options.maxTermLength !== undefined && term.length > options.maxTermLength) {
     return;
   }
   terms.add(term);
 }
 
-export function extractLexicalTerms(value: string): string[] {
+export function extractLexicalTerms(value: string, options: LexicalIndexOptions = {}): string[] {
+  const normalizedOptions = normalizeOptions(options);
   const terms = new Set<string>();
   const matches = value.match(/--?[A-Za-z0-9][A-Za-z0-9_./:-]*|\/[A-Za-z0-9_./:-]+|[A-Za-z0-9][A-Za-z0-9_./:-]{1,}/g) ?? [];
 
@@ -67,15 +80,16 @@ export function extractLexicalTerms(value: string): string[] {
     if (!match) {
       continue;
     }
-    addTerm(terms, match);
+    addTerm(terms, match, normalizedOptions);
 
     for (const part of match.split(/[./:-]+/)) {
       const normalizedPart = part.replace(/^-+/, "");
-      addTerm(terms, normalizedPart);
+      addTerm(terms, normalizedPart, normalizedOptions);
     }
   }
 
-  return [...terms].sort();
+  const sortedTerms = [...terms].sort();
+  return normalizedOptions.maxTermsPerNode === undefined ? sortedTerms : sortedTerms.slice(0, normalizedOptions.maxTermsPerNode);
 }
 
 function getNodeId(value: JsonObject): string | undefined {
@@ -146,7 +160,7 @@ function collectIndexableNodes(tree: unknown): JsonObject[] {
   return nodes;
 }
 
-function termsForNode(record: DocumentRecord, node: JsonObject): string[] {
+function termsForNode(record: DocumentRecord, node: JsonObject, options: LexicalIndexOptions): string[] {
   const textParts = [
     record.path,
     record.title,
@@ -155,10 +169,15 @@ function termsForNode(record: DocumentRecord, node: JsonObject): string[] {
     stringField(node, "summary"),
     extractNodeText(node)
   ].filter((value): value is string => Boolean(value));
-  return extractLexicalTerms(textParts.join("\n"));
+  return extractLexicalTerms(textParts.join("\n"), options);
 }
 
-async function entriesForDocument(rootDir: string, outputDir: string | undefined, record: DocumentRecord): Promise<LexicalIndexEntry[]> {
+async function entriesForDocument(
+  rootDir: string,
+  outputDir: string | undefined,
+  record: DocumentRecord,
+  options: LexicalIndexOptions
+): Promise<LexicalIndexEntry[]> {
   const pageIndexJson = await readJson<unknown>(resolveDocumentIndexPath(rootDir, record.indexPath, outputDir));
   const nodeMap = buildNodeMap(pageIndexJson);
   const entries: LexicalIndexEntry[] = [];
@@ -168,7 +187,7 @@ async function entriesForDocument(rootDir: string, outputDir: string | undefined
     if (!nodeId || !nodeMap.has(nodeId)) {
       continue;
     }
-    const terms = termsForNode(record, node);
+    const terms = termsForNode(record, node, options);
     if (terms.length === 0) {
       continue;
     }
@@ -184,14 +203,14 @@ async function entriesForDocument(rootDir: string, outputDir: string | undefined
   return entries;
 }
 
-export async function buildLexicalIndex(rootDir: string, manifest: Manifest, outputDir?: string): Promise<LexicalIndex> {
+export async function buildLexicalIndex(rootDir: string, manifest: Manifest, outputDir?: string, options: LexicalIndexOptions = {}): Promise<LexicalIndex> {
   const entries: LexicalIndexEntry[] = [];
 
   for (const record of manifest.documents) {
     if (record.status !== "ready") {
       continue;
     }
-    entries.push(...await entriesForDocument(rootDir, outputDir, record));
+    entries.push(...await entriesForDocument(rootDir, outputDir, record, options));
   }
 
   entries.sort((left, right) => left.path.localeCompare(right.path) || left.nodeId.localeCompare(right.nodeId));
@@ -204,8 +223,8 @@ export async function buildLexicalIndex(rootDir: string, manifest: Manifest, out
   };
 }
 
-export async function writeLexicalIndex(rootDir: string, manifest: Manifest, outputDir?: string): Promise<LexicalIndex> {
-  const lexicalIndex = await buildLexicalIndex(rootDir, manifest, outputDir);
+export async function writeLexicalIndex(rootDir: string, manifest: Manifest, outputDir?: string, options: LexicalIndexOptions = {}): Promise<LexicalIndex> {
+  const lexicalIndex = await buildLexicalIndex(rootDir, manifest, outputDir, options);
   await atomicWriteJson(getPageIndexPath(rootDir, LEXICAL_INDEX_FILE, outputDir), lexicalIndex);
   return lexicalIndex;
 }

@@ -321,6 +321,8 @@ ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 
 它会扫描 `**/*.md` 和 `**/*.mdx`，计算文件 hash，只重新索引新增、修改、之前失败的文件，并跳过未变化的 ready 文件。
 
+同一次索引还会在 `manifest.json`、`root-tree.json` 旁边写入 `lexical-index.json`。它只为 ready 的 PageIndex 节点保存本地精确 token terms。标准的 `query`、`queryIndex`、CLI 和 HTTP API 路径不会使用这个 sidecar；只有定制集成显式启用 tree plus lexical retriever 时才会读取它。
+
 如果有文档索引失败，普通输出会继续把统计信息写到 stdout，并把失败文档路径和 PageIndex 错误写到 stderr。
 
 使用 `--json` 可以输出带版本号的机器可读结果，包含输出路径、统计信息和失败文档明细：
@@ -810,6 +812,21 @@ const result = await advanced.queryFolder(
   }
 );
 ```
+
+如果定制集成需要控制 lexical index 体积，可以在用底层 `advanced.indexFolder` 建索引时传 `lexicalIndex`：
+
+```js
+await advanced.indexFolder("/srv/app/docs", {
+  outputDir: "/var/lib/ragbox/docs-index",
+  lexicalIndex: {
+    minTermLength: 2,
+    maxTermLength: 80,
+    maxTermsPerNode: 128
+  }
+});
+```
+
+`minTermLength` 默认是 `2`。`maxTermLength` 和 `maxTermsPerNode` 默认不限制。它们目前是底层 SDK 索引选项，还不是 CLI flag，也不是 `ragbox.config.json` 配置项。
 
 ## 查询时发生了什么
 

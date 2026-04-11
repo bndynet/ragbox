@@ -47,6 +47,7 @@ export function loadPageIndexConfig(overrides: PageIndexOptions = {}): Required<
     cliPath: overrides.cliPath ?? env.PAGEINDEX_CLI,
     pageIndexRunner: overrides.pageIndexRunner ?? parsePageIndexRunner(env.PAGEINDEX_RUNNER) ?? "auto",
     retriever: overrides.retriever,
+    lexicalIndex: overrides.lexicalIndex,
     model: overrides.model ?? env.PAGEINDEX_MODEL ?? env.LLM_MODEL ?? "gpt-4o-mini",
     baseUrl: overrides.baseUrl ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
     apiKey: overrides.apiKey ?? env.OPENAI_API_KEY,
