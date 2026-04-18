@@ -23,13 +23,12 @@ Use `ragbox.config.json` as a safe template for a real local run. Keep real secr
 ```bash
 cp examples/ragbox.config.json examples/ragbox.config.local.json
 # Edit examples/ragbox.config.local.json:
-# - pageIndex.cli
 # - pageIndex.python
 # - llm.apiKey
 # - llm.baseUrl / llm.model if needed
 ```
 
-ragbox automatically handles both common PageIndex output styles: wrappers that accept an output-path flag and scripts that write into a `results/` directory. If you use a custom wrapper with a non-default output flag, set `pageIndex.outputArg` to that flag, for example `"--out"`.
+Run `ragbox setup pageindex` from the repository root first. ragbox imports the pinned PageIndex SDK directly through `pageIndex.python`; cloned PageIndex scripts and custom CLI wrappers are no longer supported.
 
 The local config is ignored by git so it can contain the real server-side API key.
 

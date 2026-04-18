@@ -1,18 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PageIndexOptions, PageIndexRunner } from "./folder-index/types";
+import { PageIndexOptions } from "./folder-index/types";
 
 export const RAGBOX_CONFIG_FILE = "ragbox.config.json";
 export const DEFAULT_SERVE_HOST = "127.0.0.1";
 export const DEFAULT_SERVE_PORT = 8787;
 
 export type RagboxPageIndexConfig = {
-  cli?: string;
   concurrency?: number;
-  extraArgs?: string[];
-  outputArg?: string;
   python?: string;
-  runner?: PageIndexRunner;
 };
 
 export type RagboxLlmConfig = {
@@ -74,10 +70,9 @@ export type WriteDefaultRagboxConfigOptions = {
 };
 
 export type WritePageIndexSetupConfigOptions = {
-  cliPath: string;
   configPath?: string;
   cwd?: string;
-  pythonPath?: string;
+  pythonPath: string;
 };
 
 export type ResolveRagboxServeConfigOptions = RagboxServeConfig & {
@@ -183,13 +178,9 @@ function mergeIndexConfig(...configs: Array<RagboxIndexConfig | undefined>): Rag
 function pageIndexConfigToOptions(
   configDir: string,
   config: RagboxPageIndexConfig
-): Pick<PageIndexOptions, "cliPath" | "concurrency" | "extraArgs" | "outputArg" | "pageIndexRunner" | "pythonPath"> {
+): Pick<PageIndexOptions, "concurrency" | "pythonPath"> {
   return {
-    cliPath: resolveConfigCommandPath(configDir, config.cli),
     concurrency: config.concurrency,
-    extraArgs: config.extraArgs,
-    outputArg: config.outputArg,
-    pageIndexRunner: config.runner,
     pythonPath: resolveConfigCommandPath(configDir, config.python)
   };
 }
@@ -250,9 +241,7 @@ export function createDefaultRagboxConfig(options: Pick<WriteDefaultRagboxConfig
   return {
     version: 1,
     pageIndex: {
-      cli: "/path/to/PageIndex/run_pageindex.py",
-      concurrency: 1,
-      runner: "auto"
+      concurrency: 1
     },
     llm: {
       baseUrl: "https://api.openai.com/v1",
@@ -340,14 +329,9 @@ export async function writePageIndexSetupConfig(options: WritePageIndexSetupConf
   }
 
   const pageIndex: RagboxPageIndexConfig = {
-    ...(config.pageIndex ?? {}),
-    cli: toConfigRelativeCommandPath(configDir, cwd, options.cliPath)
+    concurrency: config.pageIndex?.concurrency,
+    python: toConfigRelativeCommandPath(configDir, cwd, options.pythonPath)
   };
-  if (options.pythonPath) {
-    pageIndex.python = toConfigRelativeCommandPath(configDir, cwd, options.pythonPath);
-  } else {
-    delete pageIndex.python;
-  }
 
   config.pageIndex = pageIndex;
   await fs.mkdir(path.dirname(configPath), { recursive: true });

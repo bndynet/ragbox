@@ -46,12 +46,8 @@ export type LlmClient = {
   chatCompletion: (request: LlmChatRequest) => Promise<string>;
 };
 
-export type PageIndexRunner = "auto" | "single" | "batch";
-
 export type PageIndexOptions = {
   pythonPath?: string;
-  cliPath?: string;
-  pageIndexRunner?: PageIndexRunner;
   retriever?: Retriever;
   lexicalIndex?: LexicalIndexOptions;
   model?: string;
@@ -62,8 +58,6 @@ export type PageIndexOptions = {
   exclude?: string[];
   include?: string[];
   outputDir?: string;
-  outputArg?: string;
-  extraArgs?: string[];
   env?: NodeJS.ProcessEnv;
   progress?: (event: IndexProgressEvent) => void;
   trace?: boolean;

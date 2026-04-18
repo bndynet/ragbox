@@ -1,4 +1,4 @@
-import { PageIndexOptions, PageIndexRunner } from "./types";
+import { PageIndexOptions } from "./types";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) {
@@ -26,26 +26,12 @@ function parseBoolean(value: string | undefined, fallback = false): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-function parseExtraArgs(value: string | undefined): string[] | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed.split(/\s+/) : undefined;
-}
-
-function parsePageIndexRunner(value: string | undefined): PageIndexRunner | undefined {
-  if (value === "auto" || value === "single" || value === "batch") {
-    return value;
-  }
-  return undefined;
-}
-
 export function loadPageIndexConfig(overrides: PageIndexOptions = {}): Required<Pick<PageIndexOptions, "pythonPath" | "model" | "baseUrl" | "concurrency">> &
   PageIndexOptions {
   const env = overrides.env ?? process.env;
 
   return {
     pythonPath: overrides.pythonPath ?? env.PAGEINDEX_PYTHON ?? "python3",
-    cliPath: overrides.cliPath ?? env.PAGEINDEX_CLI,
-    pageIndexRunner: overrides.pageIndexRunner ?? parsePageIndexRunner(env.PAGEINDEX_RUNNER) ?? "auto",
     retriever: overrides.retriever,
     lexicalIndex: overrides.lexicalIndex,
     model: overrides.model ?? env.PAGEINDEX_MODEL ?? env.LLM_MODEL ?? "gpt-4o-mini",
@@ -56,8 +42,6 @@ export function loadPageIndexConfig(overrides: PageIndexOptions = {}): Required<
     exclude: overrides.exclude,
     include: overrides.include,
     outputDir: overrides.outputDir ?? env.RAGBOX_OUTPUT_DIR,
-    outputArg: overrides.outputArg ?? env.PAGEINDEX_OUTPUT_ARG,
-    extraArgs: overrides.extraArgs ?? parseExtraArgs(env.PAGEINDEX_EXTRA_ARGS),
     progress: overrides.progress,
     trace: overrides.trace,
     watchDebounceMs: overrides.watchDebounceMs ?? parseNonNegativeInt(env.RAGBOX_WATCH_DEBOUNCE_MS, 500),

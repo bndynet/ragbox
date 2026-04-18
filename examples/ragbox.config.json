@@ -1,7 +1,7 @@
 {
   "version": 1,
   "pageIndex": {
-    "cli": "/path/to/PageIndex/run_pageindex.py",
+    "python": "../.ragbox/pageindex-venv/bin/python",
     "concurrency": 1
   },
   "llm": {
