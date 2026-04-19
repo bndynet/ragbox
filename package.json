@@ -27,9 +27,11 @@
     "url": "git+https://github.com/bndynet/ragbox.git"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "test": "npm run test:unit",
-    "test:unit": "tsc -p tsconfig.json && node --test dist/test/folder-index.test.js",
+    "test:unit": "npm run build && node --test dist/test/folder-index.test.js",
+    "test:e2e": "npm run build && node --test dist/test/e2e.test.js",
     "ragbox": "node dist/src/cli.js"
   },
   "dependencies": {

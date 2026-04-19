@@ -850,8 +850,12 @@ The two approaches can also be combined: use vector search for broad candidate r
 ```bash
 npm install
 npm run build
+npm run test:unit
+RAGBOX_E2E=1 npm run test:e2e
 npm run ragbox -- --help
 ```
+
+The opt-in e2e test runs the built CLI in a temporary project, performs a real implicit `pip install` of the pinned PageIndex SDK, indexes real Markdown through PageIndex, and queries the generated index. Model calls from both PageIndex summary generation and ragbox retrieval/answering are sent to an in-process OpenAI-compatible HTTP mock, so the test needs no API key and incurs no model cost. Network access to the configured Python package index is still required for the fresh PageIndex install.
 
 ### Examples
 

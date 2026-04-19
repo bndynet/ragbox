@@ -859,8 +859,12 @@ await advanced.indexFolder("/srv/app/docs", {
 ```bash
 npm install
 npm run build
+npm run test:unit
+RAGBOX_E2E=1 npm run test:e2e
 npm run ragbox -- --help
 ```
+
+这个可选 E2E 会在临时项目中运行编译后的真实 CLI，隐式执行真实的 `pip install` 来安装固定版本的 PageIndex SDK，再通过 PageIndex 索引真实 Markdown 并查询生成的索引。PageIndex 摘要生成、ragbox 文档/节点选择和最终回答所需的模型调用，都会发到测试进程内的 OpenAI-compatible HTTP mock，因此不需要真实 API key，也不会产生模型费用；但全新安装 PageIndex 时仍需要能访问所配置的 Python 包源。
 
 ### Examples
 

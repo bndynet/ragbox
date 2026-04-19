@@ -39,6 +39,12 @@ npm run ragbox -- --config ./examples/ragbox.config.local.json index --source ra
 npm run ragbox -- --config ./examples/ragbox.config.local.json query --source ragbox "What does ragbox start do?"
 ```
 
+For the automated end-to-end check, use the built-in local model mock. This still runs the real CLI and installs and executes the pinned PageIndex SDK, but it does not require a model API key:
+
+```bash
+RAGBOX_E2E=1 npm run test:e2e
+```
+
 Run the full local service loop:
 
 ```bash
