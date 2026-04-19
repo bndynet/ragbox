@@ -23,12 +23,11 @@ Use `ragbox.config.json` as a safe template for a real local run. Keep real secr
 ```bash
 cp examples/ragbox.config.json examples/ragbox.config.local.json
 # Edit examples/ragbox.config.local.json:
-# - pageIndex.python
 # - llm.apiKey
 # - llm.baseUrl / llm.model if needed
 ```
 
-Run `ragbox setup pageindex` from the repository root first. ragbox imports the pinned PageIndex SDK directly through `pageIndex.python`; cloned PageIndex scripts and custom CLI wrappers are no longer supported.
+The first indexing command automatically creates the managed PageIndex environment in `./.ragbox/`. Use `ragbox setup pageindex` only when you want to preinstall it, such as while building an offline deployment image.
 
 The local config is ignored by git so it can contain the real server-side API key.
 

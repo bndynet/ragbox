@@ -74,6 +74,12 @@ export type PageIndexOptions = {
 
 export type IndexProgressEvent =
   | {
+      type: "pageindex-setup";
+      status: "installing" | "ready" | "waiting";
+      pythonPath: string;
+      version: string;
+    }
+  | {
       type: "scan";
       rootDir: string;
       outputDir: string;

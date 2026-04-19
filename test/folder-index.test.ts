@@ -18,6 +18,7 @@ import { queryMultipleIndexes } from "../src/folder-index/multi-query";
 import { normalizeRelativePath } from "../src/folder-index/path-utils";
 import { runPageIndex } from "../src/folder-index/pageindex-runner";
 import { SUPPORTED_PAGEINDEX_VERSION } from "../src/pageindex-version";
+import { ensureManagedPageIndex } from "../src/setup-pageindex";
 import { buildNodeMap, extractNodeTextFromMarkdown, queryFolder, resolveQueryIndexLocation, stripText } from "../src/folder-index/query";
 import { generateRootTree } from "../src/folder-index/root-tree";
 import { createDocId, createIndexPath, scanMarkdownFiles } from "../src/folder-index/scan";
@@ -293,6 +294,47 @@ process.exit(0);
 async function writeFakeSdkSetupTools(binDir: string): Promise<{ pythonLog: string }> {
   await fs.mkdir(binDir, { recursive: true });
   const pythonLog = path.join(binDir, "python-sdk.log");
+  const fakeVenvPython = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const readline = require("node:readline");
+const args = process.argv.slice(2);
+const markerPath = path.join(path.dirname(path.dirname(__filename)), ".pageindex-installed");
+const installedVersion = () => fs.readFileSync(markerPath, "utf8").trim();
+fs.appendFileSync(process.env.FAKE_PYTHON_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "-m" && args[1] === "pip" && args[2] === "install") {
+  fs.writeFileSync(markerPath, ${JSON.stringify(SUPPORTED_PAGEINDEX_VERSION)});
+  process.exit(0);
+}
+if (args[0] === "-c") {
+  if (!fs.existsSync(markerPath)) process.exit(1);
+  if (args[1].includes("print(json.dumps")) {
+    process.stdout.write(JSON.stringify({ version: installedVersion() }));
+  } else if (args[1].includes("print(importlib.metadata.version")) {
+    process.stdout.write(installedVersion() + "\\n");
+  }
+  process.exit(0);
+}
+if (args[0] === "-u" && args[1] === "-c") {
+  if (!fs.existsSync(markerPath)) process.exit(1);
+  process.stdout.write(JSON.stringify({ type: "ready", version: installedVersion() }) + "\\n");
+  const input = readline.createInterface({ input: process.stdin });
+  input.on("line", (line) => {
+    const request = JSON.parse(line);
+    if (request.type === "stop") return process.exit(0);
+    const text = fs.readFileSync(request.inputPath, "utf8");
+    fs.mkdirSync(path.dirname(request.outputPath), { recursive: true });
+    fs.writeFileSync(request.outputPath, JSON.stringify({
+      node_id: "root",
+      summary: "implicit sdk ok",
+      nodes: [{ node_id: "n1", title: "Body", text }]
+    }));
+    process.stdout.write(JSON.stringify({ type: "done", id: request.id }) + "\\n");
+  });
+  return;
+}
+process.exit(0);
+`;
   await writeExecutable(
     path.join(binDir, "python3"),
     `#!/usr/bin/env node
@@ -307,7 +349,7 @@ if (args[0] === "-m" && args[1] === "venv") {
   fs.mkdirSync(binDir, { recursive: true });
   fs.writeFileSync(
     pythonPath,
-    "#!/usr/bin/env node\\nconst fs = require(\\\"node:fs\\\");\\nconst args = process.argv.slice(2);\\nfs.appendFileSync(process.env.FAKE_PYTHON_LOG, JSON.stringify(args) + \\\"\\\\n\\\");\\nif (args[0] === \\\"-c\\\" && args[1].includes(\\\"print(json.dumps\\\")) process.stdout.write(JSON.stringify({version: \\\"${SUPPORTED_PAGEINDEX_VERSION}\\\"}));\\n"
+    ${JSON.stringify(fakeVenvPython)}
   );
   fs.chmodSync(pythonPath, 0o755);
 }
@@ -714,6 +756,122 @@ test("createIndex indexes docs through product SDK options", async () => {
     [["guide.md", "n1"]]
   );
   assert.ok(lexicalIndex.entries[0]?.terms.includes("body"));
+});
+
+test("managed PageIndex setup serializes concurrent first-use installation", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const binDir = path.join(tempDir, "bin");
+  const { pythonLog } = await writeFakeSdkSetupTools(binDir);
+  const env = {
+    ...process.env,
+    FAKE_PYTHON_LOG: pythonLog,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`
+  };
+
+  const [first, second] = await Promise.all([
+    ensureManagedPageIndex({ cwd: tempDir, env }),
+    ensureManagedPageIndex({ cwd: tempDir, env })
+  ]);
+
+  assert.equal(first.pythonPath, second.pythonPath);
+  assert.equal([first, second].filter((result) => result.installedPackage).length, 1);
+  const pythonCalls = (await fs.readFile(pythonLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as string[]);
+  assert.equal(pythonCalls.filter((args) => args[0] === "-m" && args[1] === "venv").length, 1);
+  assert.equal(pythonCalls.filter((args) => args[0] === "-m" && args[1] === "pip").length, 1);
+  assert.equal(await pathExists(path.join(tempDir, ".ragbox", "pageindex-setup.lock")), false);
+});
+
+test("managed PageIndex setup repairs an unsupported managed SDK version", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const binDir = path.join(tempDir, "bin");
+  const { pythonLog } = await writeFakeSdkSetupTools(binDir);
+  const env = {
+    ...process.env,
+    FAKE_PYTHON_LOG: pythonLog,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`
+  };
+
+  const initial = await ensureManagedPageIndex({ cwd: tempDir, env });
+  await fs.writeFile(path.join(initial.venvDir, ".pageindex-installed"), "0.2.14", "utf8");
+  const repaired = await ensureManagedPageIndex({ cwd: tempDir, env });
+
+  assert.equal(repaired.createdVenv, false);
+  assert.equal(repaired.installedPackage, true);
+  const pythonCalls = (await fs.readFile(pythonLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as string[]);
+  assert.equal(pythonCalls.filter((args) => args[0] === "-m" && args[1] === "venv").length, 1);
+  assert.equal(pythonCalls.filter((args) => args[0] === "-m" && args[1] === "pip").length, 2);
+});
+
+test("index CLI installs and reuses the managed PageIndex SDK implicitly", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const binDir = path.join(tempDir, "bin");
+  const { pythonLog } = await writeFakeSdkSetupTools(binDir);
+  const cliPath = path.resolve(__dirname, "../src/cli.js");
+  const env = {
+    ...process.env,
+    FAKE_PYTHON_LOG: pythonLog,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`
+  };
+
+  await fs.mkdir(path.join(tempDir, ".git"), { recursive: true });
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "one.md"), "# One\n\nBody\n", "utf8");
+
+  const first = spawnSync(process.execPath, [cliPath, "index", docsDir, "--output-dir", outputDir], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env
+  });
+  assert.equal(first.status, 0, `STDOUT:\n${first.stdout}\nSTDERR:\n${first.stderr}`);
+  assert.match(first.stderr, /PageIndex SDK not found; preparing pageindex==0\.2\.15/);
+  assert.match(first.stderr, /PageIndex SDK ready/);
+  assert.match(first.stdout, /ready=1/);
+  assert.equal(await pathExists(path.join(tempDir, "ragbox.config.json")), false);
+  assert.match(await fs.readFile(path.join(tempDir, ".gitignore"), "utf8"), /^\.ragbox\/$/m);
+
+  const doctor = spawnSync(process.execPath, [cliPath, "doctor", "--json"], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env
+  });
+  assert.equal(doctor.status, 0, `STDOUT:\n${doctor.stdout}\nSTDERR:\n${doctor.stderr}`);
+  const doctorOutput = JSON.parse(doctor.stdout) as {
+    checks: Array<{ name: string; ok: boolean; path?: string }>;
+  };
+  const packageCheck = doctorOutput.checks.find((check) => check.name === "pageindex-package");
+  assert.equal(packageCheck?.ok, true);
+  assert.equal(packageCheck?.path, path.join(await fs.realpath(tempDir), ".ragbox", "pageindex-venv", "bin", "python"));
+
+  await fs.writeFile(path.join(docsDir, "two.md"), "# Two\n\nBody\n", "utf8");
+  const second = spawnSync(process.execPath, [cliPath, "index", docsDir, "--output-dir", outputDir], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env
+  });
+  assert.equal(second.status, 0, `STDOUT:\n${second.stdout}\nSTDERR:\n${second.stderr}`);
+  assert.doesNotMatch(second.stderr, /preparing pageindex/);
+  assert.match(second.stdout, /ready=2/);
+
+  await fs.writeFile(path.join(tempDir, ".ragbox", "pageindex-venv", ".pageindex-installed"), "0.2.14", "utf8");
+  await fs.writeFile(
+    path.join(tempDir, "ragbox.config.json"),
+    `${JSON.stringify({ version: 1, pageIndex: { python: "./.ragbox/pageindex-venv/bin/python" } }, null, 2)}\n`,
+    "utf8"
+  );
+  await fs.writeFile(path.join(docsDir, "three.md"), "# Three\n\nBody\n", "utf8");
+  const third = spawnSync(process.execPath, [cliPath, "index", docsDir, "--output-dir", outputDir], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env
+  });
+  assert.equal(third.status, 0, `STDOUT:\n${third.stdout}\nSTDERR:\n${third.stderr}`);
+  assert.match(third.stderr, /preparing pageindex==0\.2\.15/);
+  assert.match(third.stdout, /ready=3/);
+
+  const pythonCalls = (await fs.readFile(pythonLog, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as string[]);
+  assert.equal(pythonCalls.filter((args) => args[0] === "-m" && args[1] === "pip").length, 2);
 });
 
 test("createIndex reads ragbox config file options", async () => {

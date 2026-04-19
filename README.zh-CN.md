@@ -14,15 +14,14 @@
 
 ## 快速开始
 
-默认路径按“开箱即用”设计：安装 `ragbox`，让它在当前项目里准备 PageIndex，然后直接索引和提问。
+默认路径按“开箱即用”设计：安装 `ragbox` 后直接索引和提问，第一次执行索引类命令时会自动准备 PageIndex。
 
 ```bash
 # 安装 CLI
 npm install -g @bndynet/ragbox
 
-# 创建 Python venv，安装受支持的 PageIndex SDK，
-# 并写入 ragbox.config.json
-ragbox setup pageindex
+# 创建 docs 和模型配置
+ragbox init
 ```
 
 继续下一步前，先编辑 `ragbox.config.json`：填好模型配置，并把 `docs.rootDir` / `docs.outputDir` 改成你的文档目录和索引目录。
@@ -31,7 +30,6 @@ ragbox setup pageindex
 {
   "version": 1,
   "pageIndex": {
-    "python": "./.ragbox/pageindex-venv/bin/python",
     "concurrency": 1
   },
   "llm": {
@@ -101,20 +99,21 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
   --model gpt-4o-mini
 ```
 
-## Setup 做了什么
+## PageIndex 自动初始化
 
-`ragbox setup pageindex` 会帮你准备本地 PageIndex SDK：
+第一次执行需要构建索引的 `index`、`watch` 或 `start` 时，ragbox 会自动：
 
 - 创建 `./.ragbox/pageindex-venv`
 - 安装当前 ragbox 版本支持的精确 PageIndex 包版本
-- 把 `pageIndex.python` 写入 `ragbox.config.json`
-- 把 `.ragbox/` 加入 `.gitignore`
+- 使用 setup lock 串行化并发安装
+- 后续运行直接复用该环境
+- 项目已有 `.gitignore` 或检测到 `.git` 时，自动加入 `.ragbox/`
 
-升级 ragbox 后请再次运行 `ragbox setup pageindex`，让虚拟环境同步到受支持的 SDK 版本。
+`ragbox setup pageindex` 仍然保留，作为 CI 镜像、离线部署或选择基础 Python 的可选预安装命令。显式配置的外部 `pageIndex.python`、`PAGEINDEX_PYTHON` 或 `--pageindex-python` 只会被校验，ragbox 不会自动修改该环境；标准 `./.ragbox/pageindex-venv` 即使写在配置里，仍由 ragbox 自动管理。
 
 ## 前置条件
 
-默认 setup 需要：
+自动初始化需要：
 
 - Node.js 18 或更新版本
 - 带 `venv` 和 `pip` 的 Python 3，用于安装 PageIndex SDK
@@ -126,9 +125,9 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
 
 | 目标 | 使用方式 |
 | --- | --- |
-| 从零开始 | `npm install -g @bndynet/ragbox`，然后 `ragbox setup pageindex` |
+| 从零开始 | `npm install -g @bndynet/ragbox`，然后运行 `ragbox init` 和 `ragbox index` |
 | 先在一个 docs 目录试用 | `ragbox index ./docs --output-dir ./.ragbox-index`，然后 `ragbox query ./.ragbox-index "..."` |
-| 不想每次重复路径 | 使用 `ragbox setup pageindex` 写入的 `ragbox.config.json`，或运行 `ragbox init` |
+| 不想每次重复路径 | 使用 `ragbox init` 写入的 `ragbox.config.json` |
 | 多个文档目录一起查询 | 配置 `sources`，分别跑 `ragbox index --source <name>`，再用 `ragbox query --all-sources "..."` |
 | 调试回答质量 | `ragbox query --trace --json "..."` 或 `ragbox trace query "..."` |
 | 检查索引和 HTTP 服务状态 | `ragbox status ./.ragbox-index` |
@@ -139,13 +138,12 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
 
 ## 项目配置
 
-`ragbox setup pageindex` 会为默认本地 setup 创建或更新 `ragbox.config.json`。补上模型凭证后，典型配置如下：
+`ragbox init` 会创建 `ragbox.config.json`。补上模型凭证后，典型配置如下：
 
 ```json
 {
   "version": 1,
   "pageIndex": {
-    "python": "./.ragbox/pageindex-venv/bin/python",
     "concurrency": 1
   },
   "llm": {
@@ -192,7 +190,6 @@ ragbox --config ./ragbox.config.json index
 {
   "version": 1,
   "pageIndex": {
-    "python": "./.ragbox/pageindex-venv/bin/python",
     "concurrency": 1
   },
   "llm": {
@@ -252,7 +249,7 @@ Server 端使用时，建议把稳定配置集中写在 `ragbox.config.json`：P
 
 | 配置 | 环境变量 | 配置 / 命令参数 | 用于 | 默认值 |
 | --- | --- | --- | --- | --- |
-| Python 可执行文件 | `PAGEINDEX_PYTHON` | `--pageindex-python` | `index`, `watch`, `start` | `python3` |
+| Python 可执行文件 | `PAGEINDEX_PYTHON` | `pageIndex.python`, `--pageindex-python` | `index`, `watch`, `start` | 自动管理的 `./.ragbox/pageindex-venv` |
 | 输出目录 | `RAGBOX_OUTPUT_DIR` | `--output-dir` | `index`, `watch`, `start` | `<folder>/.pageindex` |
 | 并发数 | `PAGEINDEX_CONCURRENCY` | `pageIndex.concurrency`, `--concurrency` | `index`, `watch`, `start` | `1` |
 | API Base URL | `OPENAI_BASE_URL` | `--base-url` | `index`, `watch`, `query` | `https://api.openai.com/v1` |
@@ -278,7 +275,7 @@ Server 端使用时，建议把稳定配置集中写在 `ragbox.config.json`：P
 
 ### `ragbox setup pageindex`
 
-创建 `./.ragbox/pageindex-venv`，安装固定版本的 PageIndex SDK 包，更新 `ragbox.config.json`，并把 `.ragbox/` 加入 `.gitignore`。
+可选地把固定版本的 PageIndex SDK 预装到 `./.ragbox/pageindex-venv`，更新 `ragbox.config.json`，并把 `.ragbox/` 加入 `.gitignore`。普通本地使用不再要求执行此命令。
 
 ```bash
 ragbox setup pageindex
@@ -442,7 +439,7 @@ ragbox start --all-sources
 ragbox start ./docs --output-dir ./.ragbox-index
 ```
 
-当你已经通过 `ragbox setup pageindex` 准备好默认本地配置，并希望用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`。HTTP `serve` 会在 watcher 注册后立即启动，所以初始索引还在运行时，`/` 和 `/health` 已经可以响应。`/health` 在首个索引快照可查询前返回 503；初始索引完成后，以及之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
+需要用一个前台进程跑本地开发、内网服务或容器时，优先使用 `start`；缺少 PageIndex 时它会自动准备托管环境。HTTP `serve` 会在 watcher 注册后立即启动，所以初始索引还在运行时，`/` 和 `/health` 已经可以响应。`/health` 在首个索引快照可查询前返回 503；初始索引完成后，以及之后每次 watch 成功更新索引，都会刷新 serve 里的索引快照。
 
 传入 `--background` 时，`start` 会脱离当前终端后台运行。后台进程默认把 stdout/stderr 写到 `./ragbox.log`，并把 PID 写到 `./ragbox.pid`。可以用 `--log-file <path>` 和 `--pid-file <path>` 覆盖路径；如果不想写 PID 文件，可以传 `--no-pid-file`。
 
@@ -450,7 +447,7 @@ ragbox start ./docs --output-dir ./.ragbox-index
 
 配置了多个 source 时，`ragbox start` 默认启动全部 source。可以用 `--source ragbox,icharts` 限定范围，也可以用 `--all-sources` 显式表达全局启动。
 
-`start` 不会创建或修改 `ragbox.config.json`；默认本地 setup 先运行 `ragbox setup pageindex`，如果你想自己管理 PageIndex，再用 `ragbox init` 手动配置。
+`start` 不会创建或修改 `ragbox.config.json`；需要持久化项目配置时使用 `ragbox init`。
 
 ### `ragbox stop`
 
@@ -611,7 +608,7 @@ ragbox query ./.ragbox-index "..."
 - API key 可以放私有 server 配置、环境变量或 secret manager；不要提交真实 key
 - 当 `serve` 不只绑定 localhost 时，使用 `serve.authToken`、`RAGBOX_SERVE_TOKEN` 或 `--auth-token`；如果配置会提交或共享，要把 token 当作密钥处理
 - 先用 `--concurrency 1`，确认 PageIndex 和模型服务限流后再提高
-- 保持 `ragbox setup pageindex` 固定的 PageIndex SDK 版本；ragbox 会在索引前校验版本，并用常驻 worker 处理批量任务
+- 生产镜像运行时不能联网时，提前执行 `ragbox setup pageindex`；普通本地运行会自动安装固定版本
 - 如果要求零停机更新，可以先索引到 staging 目录，成功后再切换读目录
 
 私有 server 配置示例：
@@ -846,14 +843,14 @@ await advanced.indexFolder("/srv/app/docs", {
 
 ## 常见问题
 
-- `PageIndex package is not installed`：运行 `ragbox setup pageindex`，然后使用写入 `ragbox.config.json` 的 Python 路径
-- `Unsupported PageIndex package version`：再次运行 `ragbox setup pageindex`，安装当前 ragbox 版本要求的精确 SDK 版本
+- `Failed to install pageindex`：检查 `python3`、`venv`、`pip` 和 Python 包源网络，或提前执行 `ragbox setup pageindex`
+- 显式 Python 报 `Unsupported PageIndex package version`：在该环境安装要求的版本，或移除 `pageIndex.python`、`PAGEINDEX_PYTHON`、`--pageindex-python`，改用自动管理环境
 - `OPENAI_API_KEY is required for query`：在私有 `ragbox.config.json` 里添加 `llm.apiKey`，或设置 `OPENAI_API_KEY`，也可以临时传 `--api-key`
 - `Expected a docs folder... or a ragbox output directory`：`query` 的第一个参数可以传带 `.pageindex/` 的 docs 目录，也可以直接传索引输出目录
 
 ## 限制
 
-- 需要本地安装 PageIndex；`ragbox setup pageindex` 会准备包含受支持 SDK 版本的虚拟环境
+- 首次索引会下载 PageIndex 依赖；离线环境需要提前执行 `ragbox setup pageindex`
 - 查询质量依赖 PageIndex JSON 结构和所使用的 LLM
 - 当前基础流程是树结构选择，不是向量检索
 

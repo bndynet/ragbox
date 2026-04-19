@@ -399,12 +399,16 @@ export async function startWatchFolder(folder: string, options: PageIndexOptions
     await writeHealth("indexing", reason);
 
     if (!stagingOutputDir) {
-      return await indexFolder(rootDir, config);
+      return await indexFolder(rootDir, {
+        ...config,
+        pythonPath: options.pythonPath
+      });
     }
 
     await prepareStagingOutput(outputDir, stagingOutputDir);
     const stagedResult = await indexFolder(rootDir, {
       ...config,
+      pythonPath: options.pythonPath,
       outputDir: stagingOutputDir
     });
 

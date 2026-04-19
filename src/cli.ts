@@ -22,7 +22,7 @@ import { startWatchFolder, watchFolder, WatchFolderHandle } from "./folder-index
 import { IndexCounts, IndexFolderResult, IndexProgressEvent, PageIndexOptions, WatchProgressEvent } from "./folder-index/types";
 import { SUPPORTED_PAGEINDEX_VERSION } from "./pageindex-version";
 import { startServe, ServeHandle, ServeHealthResult } from "./serve";
-import { setupPageIndex, SetupPageIndexResult } from "./setup-pageindex";
+import { managedPageIndexPythonPath, setupPageIndex, SetupPageIndexResult } from "./setup-pageindex";
 import { inspectIndex, validateIndex, InspectIndexResult, ValidateIndexResult } from "./sdk";
 
 function parseConcurrency(value: string): number {
@@ -70,6 +70,16 @@ function isVerbose(): boolean {
 }
 
 function logProgress(event: IndexProgressEvent): void {
+  if (event.type === "pageindex-setup") {
+    if (event.status === "installing") {
+      console.error(`[ragbox] PageIndex SDK not found; preparing pageindex==${event.version}...`);
+    } else if (event.status === "waiting") {
+      console.error("[ragbox] waiting for another PageIndex SDK setup...");
+    } else {
+      console.error(`[ragbox] PageIndex SDK ready: ${event.pythonPath}`);
+    }
+    return;
+  }
   if (!isVerbose()) {
     return;
   }
@@ -105,6 +115,15 @@ function firstLine(value: string): string {
 
 function printIndexProgress(event: IndexProgressEvent): void {
   switch (event.type) {
+    case "pageindex-setup":
+      if (event.status === "installing") {
+        console.error(`[ragbox] PageIndex SDK not found; preparing pageindex==${event.version}...`);
+      } else if (event.status === "waiting") {
+        console.error("[ragbox] waiting for another PageIndex SDK setup...");
+      } else {
+        console.error(`[ragbox] PageIndex SDK ready: ${event.pythonPath}`);
+      }
+      break;
     case "scan":
       console.error(
         `[ragbox] scan complete output=${event.outputDir} total=${event.total} toIndex=${event.toIndex} unchanged=${event.unchanged} deleted=${event.deleted}`
@@ -1294,7 +1313,7 @@ async function buildDoctorOutput(
   const options = targets[0]?.options ?? buildQueryOptions({}, commandOptions);
   const runtime = loadPageIndexConfig(options);
   try {
-    const installation = await inspectPageIndexInstallation(runtime);
+    const installation = await inspectPageIndexInstallation(options);
     const supported = installation.version === SUPPORTED_PAGEINDEX_VERSION;
     checks.push({
       name: "pageindex-package",
@@ -1305,11 +1324,12 @@ async function buildDoctorOutput(
       path: installation.pythonPath
     });
   } catch (error) {
+    const pageIndexEnv = options.env ?? process.env;
     checks.push({
       name: "pageindex-package",
       ok: false,
       message: error instanceof Error ? error.message : String(error),
-      path: runtime.pythonPath
+      path: options.pythonPath ?? pageIndexEnv.PAGEINDEX_PYTHON ?? managedPageIndexPythonPath()
     });
   }
   checks.push({
@@ -1580,7 +1600,7 @@ async function main(): Promise<void> {
 
   setupCommand
     .command("pageindex")
-    .description("install the supported PageIndex Python package and configure ragbox")
+    .description("optionally preinstall the supported PageIndex Python package")
     .option("--python <path>", "Python executable used to create the PageIndex virtual environment", "python3")
     .option("--no-write-config", "do not create or update ragbox.config.json")
     .option("--no-gitignore", "do not add .ragbox/ to .gitignore")

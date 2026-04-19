@@ -88,7 +88,10 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
         inputPath: scannedFile.absolutePath,
         outputPath: outputPaths[index]
       })),
-      config,
+      {
+        ...config,
+        pythonPath: options.pythonPath
+      },
       {
         onJobStart: (_job, index) => {
           reportProgress(config, { type: "index-start", path: toIndex[index].path, index: index + 1, total: toIndex.length });

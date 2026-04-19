@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { SUPPORTED_PAGEINDEX_VERSION } from "../pageindex-version";
+import { ensureManagedPageIndex, managedPageIndexPythonPath } from "../setup-pageindex";
 import { loadPageIndexConfig } from "./config";
 import { isSubPath } from "./path-utils";
 import { PageIndexOptions } from "./types";
@@ -32,7 +33,8 @@ try:
         raise RuntimeError(
             f"Unsupported PageIndex version {installed_version}; "
             f"ragbox requires pageindex=={expected_version}. "
-            "Run 'ragbox setup pageindex' to install the supported version."
+            "Install the required package in the configured Python, or remove the explicit "
+            "PageIndex Python setting to use ragbox's managed environment."
         )
     from pageindex import md_to_tree
 except Exception:
@@ -263,7 +265,12 @@ function failedResults(jobs: PageIndexBatchJob[], error: string, callbacks: Page
 }
 
 export async function inspectPageIndexInstallation(options: PageIndexOptions = {}): Promise<PageIndexInstallation> {
-  const config = loadPageIndexConfig(options);
+  const env = options.env ?? process.env;
+  const explicitPythonPath = options.pythonPath ?? env.PAGEINDEX_PYTHON;
+  const config = loadPageIndexConfig({
+    ...options,
+    pythonPath: explicitPythonPath ?? managedPageIndexPythonPath()
+  });
   const code = [
     "import importlib.metadata, json",
     "print(json.dumps({'version': importlib.metadata.version('pageindex')}))"
@@ -303,11 +310,33 @@ export async function runPageIndexBatchPool(
   options: PageIndexOptions = {},
   callbacks: PageIndexBatchCallbacks = {}
 ): Promise<PageIndexBatchResult[]> {
-  const config = loadPageIndexConfig(options);
   const normalizedJobs = normalizeJobs(jobs);
   if (normalizedJobs.length === 0) {
     return [];
   }
+
+  const env = options.env ?? process.env;
+  const explicitPythonPath = options.pythonPath ?? env.PAGEINDEX_PYTHON;
+  const managedPythonPath = managedPageIndexPythonPath();
+  const usesManagedPython = !explicitPythonPath || path.resolve(explicitPythonPath) === path.resolve(managedPythonPath);
+  const effectiveOptions = usesManagedPython
+    ? {
+        ...options,
+        pythonPath: (
+          await ensureManagedPageIndex({
+            env,
+            onProgress: (event) => {
+              try {
+                options.progress?.({ type: "pageindex-setup", ...event });
+              } catch {
+                // Progress reporting must not change indexing behavior.
+              }
+            }
+          })
+        ).pythonPath
+      }
+    : options;
+  const config = loadPageIndexConfig(effectiveOptions);
 
   const workerCount = Math.min(Math.max(1, Math.floor(config.concurrency)), normalizedJobs.length);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-pageindex-"));
