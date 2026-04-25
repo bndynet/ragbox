@@ -113,6 +113,7 @@ export function recordFromScannedFile(scannedFile: ScannedFile, fields: Partial<
     size: scannedFile.size,
     mtimeMs: scannedFile.mtimeMs,
     title: scannedFile.title,
+    format: scannedFile.format,
     indexPath: scannedFile.indexPath,
     status: fields.status ?? "ready",
     summary: fields.summary,

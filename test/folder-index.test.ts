@@ -21,7 +21,7 @@ import { SUPPORTED_PAGEINDEX_VERSION } from "../src/pageindex-version";
 import { ensureManagedPageIndex } from "../src/setup-pageindex";
 import { buildNodeMap, extractNodeTextFromMarkdown, queryFolder, resolveQueryIndexLocation, stripText } from "../src/folder-index/query";
 import { generateRootTree } from "../src/folder-index/root-tree";
-import { createDocId, createIndexPath, scanMarkdownFiles } from "../src/folder-index/scan";
+import { createDocId, createIndexPath, documentFormatFromPath, scanDocuments, scanMarkdownFiles } from "../src/folder-index/scan";
 import { Manifest, ScannedFile } from "../src/folder-index/types";
 
 function scanned(pathName: string, hash = "sha256:hash"): ScannedFile {
@@ -34,6 +34,7 @@ function scanned(pathName: string, hash = "sha256:hash"): ScannedFile {
     size: 10,
     mtimeMs: 1,
     title: path.basename(pathName, path.extname(pathName)),
+    format: documentFormatFromPath(pathName) ?? "markdown",
     indexPath: createIndexPath(docId)
   };
 }
@@ -130,7 +131,11 @@ async function writeFakeSdkPackage(
 
   await fs.mkdir(packageDir, { recursive: true });
   await fs.mkdir(distInfoDir, { recursive: true });
-  await fs.writeFile(path.join(packageDir, "__init__.py"), "from .page_index_md import md_to_tree\n", "utf8");
+  await fs.writeFile(
+    path.join(packageDir, "__init__.py"),
+    "from .page_index_md import md_to_tree\nfrom .client import PageIndexClient\n",
+    "utf8"
+  );
   await fs.writeFile(
     path.join(distInfoDir, "METADATA"),
     `Metadata-Version: 2.1\nName: pageindex\nVersion: ${version}\n`,
@@ -181,6 +186,57 @@ async def md_to_tree(md_path, if_thinning=False, min_token_threshold=5000, if_ad
             "if_add_node_id": if_add_node_id,
         },
     }
+`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(packageDir, "client.py"),
+    `import os
+
+class PageIndexClient:
+    def __init__(self, api_key=None, index=None, **kwargs):
+        if not isinstance(index, dict) or index.get("mode") != "local":
+            raise RuntimeError("expected local PageIndexClient index config")
+        expected_model = os.environ.get("FAKE_EXPECT_MODEL")
+        if expected_model and index.get("model") != expected_model:
+            raise RuntimeError("unexpected model: " + str(index.get("model")))
+        self.file_path = None
+
+    def submit_document(self, file_path, mode=None, **kwargs):
+        if mode != "flash":
+            raise RuntimeError("expected flash PDF indexing")
+        if not file_path.lower().endswith(".pdf"):
+            raise RuntimeError("only PDF files are supported")
+        if os.path.basename(file_path) == os.environ.get("FAKE_PAGEINDEX_FAIL_FILE"):
+            raise RuntimeError("intentional PageIndex failure")
+        if os.path.basename(file_path) == os.environ.get("FAKE_PAGEINDEX_BLANK_PDF_FILE"):
+            raise RuntimeError("Failed to submit document: PDF has no content. All pages are blank.")
+        self.file_path = file_path
+        if os.environ.get("FAKE_PAGEINDEX_JOB_LOG"):
+            with open(os.environ["FAKE_PAGEINDEX_JOB_LOG"], "a", encoding="utf-8") as f:
+                f.write(os.path.basename(file_path) + "\\n")
+        return {"doc_id": "pi-fake", "name": os.path.basename(file_path)}
+
+    def get_tree(self, doc_id, node_summary=False, include_text=True):
+        if doc_id != "pi-fake" or not node_summary or not include_text:
+            raise RuntimeError("unexpected get_tree arguments")
+        name = os.path.basename(self.file_path)
+        return {
+            "result": [{
+                "node_id": "0001",
+                "title": "PDF Body",
+                "summary": "PDF summary",
+                "page_index": 1,
+                "text": "PDF body from " + name,
+                "nodes": [],
+            }],
+        }
+
+    def get_document(self, doc_id):
+        return {"id": doc_id, "description": "summary:" + os.path.basename(self.file_path)}
+
+    def delete_document(self, doc_id):
+        return {"doc_id": doc_id, "deleted": True}
 `,
     "utf8"
   );
@@ -756,6 +812,48 @@ test("createIndex indexes docs through product SDK options", async () => {
     [["guide.md", "n1"]]
   );
   assert.ok(lexicalIndex.entries[0]?.terms.includes("body"));
+});
+
+test("createIndex indexes Markdown and PDF through their PageIndex package APIs", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const docsDir = path.join(tempDir, "docs");
+  const outputDir = path.join(tempDir, ".ragbox-index");
+  const jobLog = path.join(tempDir, "pageindex-jobs.log");
+
+  await fs.mkdir(docsDir, { recursive: true });
+  await fs.writeFile(path.join(docsDir, "guide.md"), "# Guide\n\nMarkdown body\n", "utf8");
+  await fs.writeFile(path.join(docsDir, "manual.pdf"), "%PDF fake unit fixture", "utf8");
+  const fake = await writeFakeSdkPackage(tempDir);
+
+  const result = await ragbox.createIndex(docsDir, {
+    env: {
+      ...fake.env,
+      FAKE_EXPECT_MODEL: "sdk-model",
+      FAKE_PAGEINDEX_JOB_LOG: jobLog
+    },
+    outputDir,
+    pageIndexPython: "python3",
+    model: "sdk-model"
+  });
+
+  assert.equal(result.counts.ready, 2);
+  assert.equal(result.counts.failed, 0);
+  assert.deepEqual(
+    result.manifest.documents.map((document) => [document.path, document.format]),
+    [
+      ["guide.md", "markdown"],
+      ["manual.pdf", "pdf"]
+    ]
+  );
+  const pdfRecord = result.manifest.documents.find((document) => document.path === "manual.pdf");
+  assert.ok(pdfRecord);
+  const pdfIndex = JSON.parse(await fs.readFile(path.join(outputDir, pdfRecord.indexPath), "utf8")) as {
+    structure: Array<{ node_id: string; page_index: number; text: string }>;
+  };
+  assert.deepEqual(pdfIndex.structure.map((node) => node.node_id), ["0001"]);
+  assert.equal(pdfIndex.structure[0]?.page_index, 1);
+  assert.equal(pdfIndex.structure[0]?.text, "PDF body from manual.pdf");
+  assert.deepEqual((await fs.readFile(jobLog, "utf8")).trim().split(/\r?\n/).sort(), ["guide.md", "manual.pdf"]);
 });
 
 test("managed PageIndex setup serializes concurrent first-use installation", async () => {
@@ -1558,7 +1656,7 @@ test("init CLI writes a ragbox config file", async () => {
 
   const config = JSON.parse(await fs.readFile(configPath, "utf8")) as {
     version: number;
-    docs: { rootDir: string; outputDir: string };
+    docs: { rootDir: string; outputDir: string; include: string[] };
     llm: { apiKey: string; baseUrl: string; model: string };
     pageIndex: { concurrency: number };
     serve: { authToken: string; host: string; port: number };
@@ -1574,6 +1672,7 @@ test("init CLI writes a ragbox config file", async () => {
   assert.equal(config.serve.port, 8787);
   assert.equal(config.docs.rootDir, "./content");
   assert.equal(config.docs.outputDir, "./.idx");
+  assert.deepEqual(config.docs.include, ["**/*.md", "**/*.mdx", "**/*.pdf"]);
 
   const resolved = await resolveRagboxConfig({ configPath });
   const runtimeConfig = loadPageIndexConfig({
@@ -3388,21 +3487,30 @@ test("queryMultipleIndexes uses a custom LlmClient for source queries and final 
   }
 });
 
-test("scanMarkdownFiles excludes a custom output dir inside the source root", async () => {
+test("scanDocuments supports Markdown, MDX, and PDF and excludes a custom output dir", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
   const rootDir = path.join(tempDir, "docs");
   const outputDir = path.join(rootDir, ".ragbox-index");
 
   await fs.mkdir(outputDir, { recursive: true });
   await fs.writeFile(path.join(rootDir, "keep.md"), "# Keep\n", "utf8");
+  await fs.writeFile(path.join(rootDir, "component.mdx"), "# Component\n", "utf8");
+  await fs.writeFile(path.join(rootDir, "manual.pdf"), "%PDF fixture", "utf8");
+  await fs.writeFile(path.join(rootDir, "ignore.txt"), "Ignore\n", "utf8");
   await fs.writeFile(path.join(outputDir, "ignore.md"), "# Ignore\n", "utf8");
 
-  const files = await scanMarkdownFiles(rootDir, { excludedDirs: [outputDir] });
+  const files = await scanDocuments(rootDir, { excludedDirs: [outputDir] });
 
   assert.deepEqual(
-    files.map((file) => file.path),
-    ["keep.md"]
+    files.map((file) => [file.path, file.title, file.format]),
+    [
+      ["component.mdx", "Component", "mdx"],
+      ["keep.md", "Keep", "markdown"],
+      ["manual.pdf", "manual", "pdf"]
+    ]
   );
+
+  assert.deepEqual((await scanMarkdownFiles(rootDir, { excludedDirs: [outputDir] })).map((file) => file.path), ["component.mdx", "keep.md"]);
 });
 
 test("diffManifest detects added, modified, unchanged, deleted, and retry failed files", () => {
@@ -3596,6 +3704,26 @@ fs.writeFileSync(outputPath, JSON.stringify({ node_id: "root", summary: "ok", te
     if_add_node_text: "yes",
     if_add_node_id: "yes"
   });
+});
+
+test("runPageIndex explains that image-only PDFs need OCR", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ragbox-test-"));
+  const inputPath = path.join(tempDir, "scan.pdf");
+  const outputPath = path.join(tempDir, "scan.pageindex.json");
+  await fs.writeFile(inputPath, "%PDF fake scanned fixture", "utf8");
+  const fake = await writeFakeSdkPackage(tempDir);
+
+  await assert.rejects(
+    runPageIndex(inputPath, outputPath, {
+      env: {
+        ...fake.env,
+        FAKE_PAGEINDEX_BLANK_PDF_FILE: "scan.pdf"
+      },
+      pythonPath: "python3",
+      model: "test-model"
+    }),
+    /PDF has no extractable text layer\. Scanned or image-only PDFs require OCR before indexing\./
+  );
 });
 
 test("runPageIndex reuses one SDK installation across calls", async () => {

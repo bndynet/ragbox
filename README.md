@@ -1,6 +1,6 @@
 # RAGbox
 
-Ask questions about your Markdown/MDX docs from the terminal, an HTTP service, or a Node.js app.
+Ask questions about your Markdown, MDX, and PDF docs from the terminal, an HTTP service, or a Node.js app.
 
 `ragbox` turns a documentation folder into a local queryable index. You can use it to search product docs, API guides, runbooks, internal handbooks, and multi-package docs without setting up a vector database.
 
@@ -46,7 +46,8 @@ Before continuing, edit `ragbox.config.json`: add your model settings and point 
   },
   "docs": {
     "rootDir": "./docs",
-    "outputDir": "./.ragbox-index"
+    "outputDir": "./.ragbox-index",
+    "include": ["**/*.md", "**/*.mdx", "**/*.pdf"]
   }
 }
 ```
@@ -119,7 +120,7 @@ Automatic setup needs:
 
 - Node.js 18 or newer
 - Python 3 with `venv` and `pip`, for the PageIndex SDK
-- a docs folder containing `.md` or `.mdx` files
+- a docs folder containing `.md`, `.mdx`, or text-layer `.pdf` files
 - an OpenAI-compatible `/chat/completions` endpoint
 - an API key for that endpoint
 
@@ -208,12 +209,12 @@ For multiple documentation directories, name each one under `sources`. This is u
     "ragbox": {
       "rootDir": "./ragbox",
       "outputDir": "./.ragbox-index/ragbox",
-      "include": ["**/*.md", "**/*.mdx"]
+      "include": ["**/*.md", "**/*.mdx", "**/*.pdf"]
     },
     "icharts": {
       "rootDir": "./icharts",
       "outputDir": "./.ragbox-index/icharts",
-      "include": ["**/*.md", "**/*.mdx"]
+      "include": ["**/*.md", "**/*.mdx", "**/*.pdf"]
     }
   }
 }
@@ -299,7 +300,7 @@ ragbox init --output ./configs/ragbox.config.json --force
 
 ### `ragbox index <folder>`
 
-Builds or updates the local index for a Markdown/MDX folder. Run this before `query` or `serve`.
+Builds or updates the local index for a Markdown/MDX/PDF folder. Run this before `query` or `serve`.
 
 ```bash
 ragbox index ./docs
@@ -310,7 +311,9 @@ ragbox index ./docs --pageindex-python /opt/venvs/pageindex/bin/python
 ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 ```
 
-`index` scans `**/*.md` and `**/*.mdx`, hashes files, re-indexes new/modified/failed files, skips unchanged ready files, and removes deleted files from the manifest.
+`index` scans `**/*.md`, `**/*.mdx`, and `**/*.pdf`, hashes files, re-indexes new/modified/failed files, skips unchanged ready files, and removes deleted files from the manifest.
+
+Markdown and MDX keep using PageIndex's `md_to_tree` helper. PDF uses the package's official `PageIndexClient` in local Flash mode. Local PDF processing extracts the embedded text layer; it does not run OCR, so scanned or image-only PDFs must be OCRed before indexing.
 
 The same run also writes `lexical-index.json` next to `manifest.json` and `root-tree.json`. It stores local exact-token terms for ready PageIndex nodes. The standard `query`, `queryIndex`, CLI, and HTTP API paths do not use this sidecar; it is read only when an advanced integration opts into the tree plus lexical retriever.
 
@@ -549,7 +552,7 @@ ragbox watch ./docs \
   --jsonl
 ```
 
-Watch mode listens for Markdown/MDX add, change, and unlink events. It ignores `node_modules`, `.git`, `.pageindex`, `dist`, `build`, and a custom output directory when it is inside the watched root.
+Watch mode listens for Markdown, MDX, and PDF add, change, and unlink events. It ignores `node_modules`, `.git`, `.pageindex`, `dist`, `build`, and a custom output directory when it is inside the watched root.
 
 Use `--jsonl` to stream versioned JSON Lines events for integrations. The stream includes `watch-start`, `watch-lock-acquired`, `watch-file-event`, `watch-index-start`, `watch-index-retry`, `watch-index-partial-failure`, `watch-output-promoted`, `watch-index-done`, `watch-index-failed`, `watch-health`, `watch-webhook-failed`, `watch-lock-released`, `watch-stop`, and `index-progress` events.
 
@@ -810,7 +813,7 @@ await advanced.indexFolder("/srv/app/docs", {
 
 At a high level, `ragbox` keeps the structure of your docs instead of flattening everything into anonymous chunks:
 
-- each Markdown/MDX file becomes a structured PageIndex tree
+- each Markdown/MDX/PDF file becomes a structured PageIndex tree
 - the docs folder gets a small index manifest
 - a query first selects likely documents, then likely sections inside those documents
 - the final answer is generated only from the selected section text
@@ -823,7 +826,7 @@ Traditional vector RAG usually chunks documents, embeds chunks, and retrieves by
 
 | Area | Vector DB RAG | `ragbox` |
 | --- | --- | --- |
-| Index unit | Text chunks | Markdown/MDX file plus PageIndex nodes |
+| Index unit | Text chunks | Markdown/MDX/PDF file plus PageIndex nodes |
 | Retrieval signal | Embedding similarity | LLM selection over document and node trees |
 | Storage | Vector database plus document store | Local JSON files under the output directory |
 | Context shape | Flat retrieved chunks | Structured nodes with file paths and node ids |
@@ -836,12 +839,14 @@ The two approaches can also be combined: use vector search for broad candidate r
 
 - `Failed to install pageindex`: verify that `python3`, `venv`, `pip`, and package-index network access are available, or preinstall with `ragbox setup pageindex`.
 - `Unsupported PageIndex package version` for an explicit Python: install the required version in that environment, or remove `pageIndex.python`, `PAGEINDEX_PYTHON`, or `--pageindex-python` to use the managed environment.
+- `PDF has no extractable text layer`: run OCR on the scanned or image-only PDF first, then index the OCRed PDF.
 - `OPENAI_API_KEY is required for query`: add `llm.apiKey` to a private `ragbox.config.json`, set `OPENAI_API_KEY`, or pass `--api-key`.
 - `Expected a docs folder... or a ragbox output directory`: pass either the docs folder with `.pageindex/`, or the output directory itself.
 
 ## Limitations
 
 - The first indexing run downloads PageIndex dependencies unless they were preinstalled with `ragbox setup pageindex`.
+- Local PDF indexing requires an extractable text layer and does not OCR scanned pages.
 - Query quality depends on PageIndex JSON shape and the configured LLM.
 - The basic flow uses tree selection, not vector search.
 
@@ -855,7 +860,7 @@ RAGBOX_E2E=1 npm run test:e2e
 npm run ragbox -- --help
 ```
 
-The opt-in e2e test runs the built CLI in a temporary project, performs a real implicit `pip install` of the pinned PageIndex SDK, indexes real Markdown through PageIndex, and queries the generated index. Model calls from both PageIndex summary generation and ragbox retrieval/answering are sent to an in-process OpenAI-compatible HTTP mock, so the test needs no API key and incurs no model cost. Network access to the configured Python package index is still required for the fresh PageIndex install.
+The opt-in e2e test runs the built CLI in a temporary project, performs a real implicit `pip install` of the pinned PageIndex SDK, indexes real Markdown and a text-layer PDF through PageIndex, and queries both generated indexes. Model calls from both PageIndex summary generation and ragbox retrieval/answering are sent to an in-process OpenAI-compatible HTTP mock, so the test needs no API key and incurs no model cost. Network access to the configured Python package index is still required for the fresh PageIndex install.
 
 ### Examples
 

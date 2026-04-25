@@ -6,19 +6,39 @@ import { createReadStream } from "node:fs";
 import { hashFile } from "./hash";
 import { INDEXES_DIR } from "./manifest";
 import { isSubPath, normalizeAbsolutePath, normalizeRelativePath } from "./path-utils";
-import { ScannedFile } from "./types";
+import { DocumentFormat, ScannedFile } from "./types";
 
 const DEFAULT_EXCLUDED_DIRS = new Set(["node_modules", ".git", ".pageindex", "dist", "build"]);
 
-type ScanMarkdownFilesOptions = {
+export type ScanDocumentsOptions = {
   excludedDirs?: string[];
   exclude?: string[];
   include?: string[];
 };
 
-export function isMarkdownDocument(filePath: string): boolean {
+export type ScanMarkdownFilesOptions = ScanDocumentsOptions;
+
+export function documentFormatFromPath(filePath: string): DocumentFormat | undefined {
   const ext = path.extname(filePath).toLowerCase();
-  return ext === ".md" || ext === ".mdx";
+  if (ext === ".md") {
+    return "markdown";
+  }
+  if (ext === ".mdx") {
+    return "mdx";
+  }
+  if (ext === ".pdf") {
+    return "pdf";
+  }
+  return undefined;
+}
+
+export function isMarkdownDocument(filePath: string): boolean {
+  const format = documentFormatFromPath(filePath);
+  return format === "markdown" || format === "mdx";
+}
+
+export function isSupportedDocument(filePath: string): boolean {
+  return documentFormatFromPath(filePath) !== undefined;
 }
 
 export function createDocId(relativePath: string): string {
@@ -89,7 +109,7 @@ function matchesPattern(relativePath: string, patterns: string[] | undefined): b
   return patterns.some((pattern) => globToRegExp(pattern).test(normalizedPath));
 }
 
-export function isIncludedPath(relativePath: string, options: Pick<ScanMarkdownFilesOptions, "exclude" | "include"> = {}): boolean {
+export function isIncludedPath(relativePath: string, options: Pick<ScanDocumentsOptions, "exclude" | "include"> = {}): boolean {
   const normalizedPath = normalizeRelativePath(relativePath);
   const includePatterns = options.include?.length ? options.include : undefined;
 
@@ -122,7 +142,13 @@ export async function deriveMarkdownTitle(filePath: string): Promise<string> {
   return path.basename(filePath, path.extname(filePath));
 }
 
-export async function scanMarkdownFiles(rootDir: string, options: ScanMarkdownFilesOptions = {}): Promise<ScannedFile[]> {
+export async function deriveDocumentTitle(filePath: string): Promise<string> {
+  return documentFormatFromPath(filePath) === "pdf"
+    ? path.basename(filePath, path.extname(filePath))
+    : await deriveMarkdownTitle(filePath);
+}
+
+export async function scanDocuments(rootDir: string, options: ScanDocumentsOptions = {}): Promise<ScannedFile[]> {
   const absoluteRoot = path.resolve(rootDir);
   const excludedDirs = (options.excludedDirs ?? []).map((dir) => path.resolve(dir));
   const files: ScannedFile[] = [];
@@ -150,7 +176,8 @@ export async function scanMarkdownFiles(rootDir: string, options: ScanMarkdownFi
         continue;
       }
 
-      if (!entry.isFile() || !isMarkdownDocument(entry.name)) {
+      const format = documentFormatFromPath(entry.name);
+      if (!entry.isFile() || !format) {
         continue;
       }
 
@@ -168,7 +195,8 @@ export async function scanMarkdownFiles(rootDir: string, options: ScanMarkdownFi
         contentHash: await hashFile(absolutePath),
         size: stat.size,
         mtimeMs: stat.mtimeMs,
-        title: await deriveMarkdownTitle(absolutePath),
+        title: await deriveDocumentTitle(absolutePath),
+        format,
         indexPath: createIndexPath(docId)
       });
     }
@@ -176,4 +204,8 @@ export async function scanMarkdownFiles(rootDir: string, options: ScanMarkdownFi
 
   await walk(absoluteRoot);
   return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export async function scanMarkdownFiles(rootDir: string, options: ScanMarkdownFilesOptions = {}): Promise<ScannedFile[]> {
+  return (await scanDocuments(rootDir, options)).filter((file) => file.format !== "pdf");
 }

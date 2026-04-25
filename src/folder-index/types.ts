@@ -1,5 +1,7 @@
 export type DocumentStatus = "ready" | "failed" | "deleted";
 
+export type DocumentFormat = "markdown" | "mdx" | "pdf";
+
 export type Manifest = {
   version: 1;
   rootDir: string;
@@ -15,6 +17,7 @@ export type DocumentRecord = {
   size: number;
   mtimeMs: number;
   title: string;
+  format?: DocumentFormat;
   summary?: string;
   indexPath: string;
   status: DocumentStatus;
@@ -276,6 +279,7 @@ export type ScannedFile = {
   size: number;
   mtimeMs: number;
   title: string;
+  format: DocumentFormat;
   indexPath: string;
 };
 

@@ -11,6 +11,7 @@ import { managedPageIndexPythonPath } from "../src/setup-pageindex";
 const MOCK_API_KEY = "ragbox-e2e-mock-key";
 const MOCK_MODEL = "gpt-4o-mini";
 const MOCK_ANSWER = "MOCK_E2E_ANSWER: ragbox start watches, indexes, and serves the documentation.";
+const MOCK_PDF_ANSWER = "MOCK_E2E_PDF_ANSWER: ragbox can index text-layer PDF documents.";
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_TEST_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -19,7 +20,7 @@ type CliResult = {
   stdout: string;
 };
 
-type MockRequestKind = "answer" | "pageindex-summary" | "select-documents" | "select-nodes";
+type MockRequestKind = "answer" | "pageindex-description" | "pageindex-summary" | "select-documents" | "select-nodes";
 
 type MockRequest = {
   authorization?: string;
@@ -133,7 +134,69 @@ function promptFromBody(body: Record<string, unknown>): string {
     .join("\n");
 }
 
+function createTextPdf(pages: string[][]): Buffer {
+  const pageIds = pages.map((_, index) => 3 + index);
+  const fontId = 3 + pages.length;
+  const contentIds = pages.map((_, index) => fontId + 1 + index);
+  const outlineRootId = fontId + 1 + pages.length;
+  const outlineIds = pages.map((_, index) => outlineRootId + 1 + index);
+  const objects: string[] = new Array(outlineRootId + pages.length + 1);
+  objects[1] = `<< /Type /Catalog /Pages 2 0 R /Outlines ${outlineRootId} 0 R /PageMode /UseOutlines >>`;
+  objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`;
+  objects[fontId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+  for (let index = 0; index < pages.length; index += 1) {
+    const escaped = pages[index].map((line) => line.replace(/([\\()])/g, "\\$1"));
+    const textCommands = escaped
+      .map((line, lineIndex) => `${lineIndex === 0 ? "/F1 18 Tf" : "/F1 12 Tf 0 -24 Td"} (${line}) Tj`)
+      .join("\n");
+    const stream = `BT\n72 720 Td\n${textCommands}\nET\n`;
+    objects[pageIds[index]] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentIds[index]} 0 R >>`;
+    objects[contentIds[index]] = `<< /Length ${Buffer.byteLength(stream, "ascii")} >>\nstream\n${stream}endstream`;
+  }
+
+  objects[outlineRootId] = `<< /Type /Outlines /First ${outlineIds[0]} 0 R /Last ${outlineIds.at(-1)} 0 R /Count ${pages.length} >>`;
+  for (let index = 0; index < pages.length; index += 1) {
+    const title = pages[index][0].replace(/([\\()])/g, "\\$1");
+    const previous = index > 0 ? `/Prev ${outlineIds[index - 1]} 0 R ` : "";
+    const next = index < pages.length - 1 ? `/Next ${outlineIds[index + 1]} 0 R ` : "";
+    objects[outlineIds[index]] = `<< /Title (${title}) /Parent ${outlineRootId} 0 R ${previous}${next}/Dest [${pageIds[index]} 0 R /Fit] >>`;
+  }
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (let index = 1; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf, "ascii"));
+    pdf += `${index} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf, "ascii");
+  pdf += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(pdf, "ascii");
+}
+
+function documentNodes(value: unknown): Array<{ node_id?: string; path?: string }> {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const record = value as { children?: unknown[]; node_id?: string; path?: string; type?: string };
+  return [
+    ...(record.type === "document" ? [{ node_id: record.node_id, path: record.path }] : []),
+    ...(record.children ?? []).flatMap((child) => documentNodes(child))
+  ];
+}
+
 function mockCompletion(prompt: string): { content: string; kind: MockRequestKind } {
+  if (prompt.includes("expert in generating descriptions for a document")) {
+    return {
+      content: "This PDF explains that ragbox supports indexing text-layer PDF documents.",
+      kind: "pageindex-description"
+    };
+  }
+
   if (prompt.includes("generate a description of the partial document")) {
     return {
       content: "This section explains that ragbox start watches documentation, refreshes its index, and serves queries.",
@@ -142,7 +205,13 @@ function mockCompletion(prompt: string): { content: string; kind: MockRequestKin
   }
 
   if (prompt.includes("root documentation tree") && prompt.includes('"documents"')) {
-    const docId = prompt.match(/"node_id"\s*:\s*"(doc:[^"]+)"/)?.[1];
+    const rootTreeMarker = "Root tree:\n";
+    const rootTreeOffset = prompt.indexOf(rootTreeMarker);
+    assert.notEqual(rootTreeOffset, -1, "The document-selection prompt should contain a root tree");
+    const rootTree = JSON.parse(prompt.slice(rootTreeOffset + rootTreeMarker.length)) as unknown;
+    const question = prompt.match(/User question:\n([\s\S]*?)\nRoot tree:/)?.[1] ?? "";
+    const preferredPath = /PDF/i.test(question) ? "manual.pdf" : "guide.md";
+    const docId = documentNodes(rootTree).find((node) => node.path === preferredPath)?.node_id;
     assert.ok(docId, "The document-selection prompt should contain a document node id");
     return { content: JSON.stringify({ documents: [docId] }), kind: "select-documents" };
   }
@@ -154,6 +223,9 @@ function mockCompletion(prompt: string): { content: string; kind: MockRequestKin
   }
 
   if (prompt.includes("Answer the user question using only the provided context")) {
+    if (prompt.includes("PDF_SUPPORT_TOKEN")) {
+      return { content: MOCK_PDF_ANSWER, kind: "answer" };
+    }
     assert.match(prompt, /ragbox start watches documentation/i);
     return { content: MOCK_ANSWER, kind: "answer" };
   }
@@ -233,9 +305,10 @@ async function startMockLlm(): Promise<{
 }
 
 function assertIndexSucceeded(result: CliResult, ready: number): void {
-  assert.match(result.stdout, /Indexed /);
-  assert.match(result.stdout, new RegExp(`^ready=${ready}$`, "m"));
-  assert.match(result.stdout, /^failed=0$/m);
+  const diagnostic = `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`;
+  assert.match(result.stdout, /Indexed /, diagnostic);
+  assert.match(result.stdout, new RegExp(`^ready=${ready}$`, "m"), diagnostic);
+  assert.match(result.stdout, /^failed=0$/m, diagnostic);
 }
 
 function parseQueryResult(result: CliResult): Record<string, unknown> {
@@ -291,14 +364,34 @@ test(
       await fs.access(path.join(outputDir, "root-tree.json"));
 
       await fs.writeFile(path.join(docsDir, "z-extra.md"), "# Z Extra\n\nA short extra document.\n", "utf8");
+      await fs.writeFile(
+        path.join(docsDir, "manual.pdf"),
+        createTextPdf([
+          ["1 Introduction", "PDF_SUPPORT_TOKEN Ragbox indexes text-layer PDF documents.", "The document remains local."],
+          ["2 PDF Indexing", "PageIndex extracts the embedded PDF text layer.", "The result is stored as a local tree."],
+          ["3 PDF Querying", "Ragbox selects PDF document nodes before answering.", "Sources retain the PDF file path."]
+        ])
+      );
       const secondIndex = await runCli(
         "second index reusing managed PageIndex",
         ["index", docsDir, "--concurrency", "1", "--api-key", MOCK_API_KEY, "--base-url", mockLlm.baseUrl, "--model", MOCK_MODEL],
         projectDir,
         env
       );
-      assertIndexSucceeded(secondIndex, 2);
+      assertIndexSucceeded(secondIndex, 3);
       assert.doesNotMatch(secondIndex.stderr, /PageIndex SDK not found; preparing/);
+
+      const manifest = JSON.parse(await fs.readFile(path.join(outputDir, "manifest.json"), "utf8")) as {
+        documents: Array<{ format?: string; path: string; status: string }>;
+      };
+      assert.deepEqual(
+        manifest.documents.map((document) => [document.path, document.format, document.status]),
+        [
+          ["guide.md", "markdown", "ready"],
+          ["manual.pdf", "pdf", "ready"],
+          ["z-extra.md", "markdown", "ready"]
+        ]
+      );
 
       for (const [label, target] of [
         ["output directory", outputDir],
@@ -326,10 +419,35 @@ test(
         assert.ok(Array.isArray(parsed.sources) && parsed.sources.length > 0, `${label} query should contain indexed sources`);
       }
 
+      const pdfQuery = await runCli(
+        "query PDF document",
+        [
+          "query",
+          outputDir,
+          "What does the PDF manual say is supported?",
+          "--api-key",
+          MOCK_API_KEY,
+          "--base-url",
+          mockLlm.baseUrl,
+          "--model",
+          MOCK_MODEL,
+          "--trace"
+        ],
+        projectDir,
+        env
+      );
+      const parsedPdfQuery = parseQueryResult(pdfQuery);
+      assert.equal(parsedPdfQuery.answer, MOCK_PDF_ANSWER);
+      assert.ok(
+        Array.isArray(parsedPdfQuery.sources)
+          && parsedPdfQuery.sources.some((source) => (source as { path?: string }).path === "manual.pdf"),
+        "PDF query should cite the indexed PDF"
+      );
+
       const requestKinds = new Set(mockLlm.requests.map((request) => request.kind));
       assert.deepEqual(
         requestKinds,
-        new Set<MockRequestKind>(["answer", "pageindex-summary", "select-documents", "select-nodes"])
+        new Set<MockRequestKind>(["answer", "pageindex-description", "pageindex-summary", "select-documents", "select-nodes"])
       );
       assert.ok(mockLlm.requests.every((request) => request.authorization === `Bearer ${MOCK_API_KEY}`));
       assert.ok(mockLlm.requests.every((request) => request.path === "/v1/chat/completions"));

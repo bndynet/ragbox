@@ -7,7 +7,8 @@ import { SUPPORTED_PAGEINDEX_VERSION } from "../pageindex-version";
 import { ensureManagedPageIndex, managedPageIndexPythonPath } from "../setup-pageindex";
 import { loadPageIndexConfig } from "./config";
 import { isSubPath } from "./path-utils";
-import { PageIndexOptions } from "./types";
+import { documentFormatFromPath } from "./scan";
+import { DocumentFormat, PageIndexOptions } from "./types";
 
 const MAX_CAPTURED_OUTPUT = 64 * 1024;
 
@@ -43,6 +44,56 @@ except Exception:
 
 send({"type": "ready", "version": installed_version})
 
+def index_markdown(request):
+    return asyncio.run(md_to_tree(
+        md_path=request["inputPath"],
+        if_thinning=False,
+        min_token_threshold=5000,
+        if_add_node_summary="yes",
+        summary_token_threshold=200,
+        model=request["model"],
+        if_add_doc_description="no",
+        if_add_node_text="yes",
+        if_add_node_id="yes",
+    ))
+
+def index_pdf(request):
+    from pageindex import PageIndexClient
+
+    storage_path = os.path.join(os.getcwd(), "pageindex-client-store")
+    client = PageIndexClient(index={
+        "mode": "local",
+        "model": request["model"],
+        "summary_model": request["model"],
+        "storage_path": storage_path,
+    })
+    try:
+        submitted = client.submit_document(request["inputPath"], mode="flash")
+    except Exception as error:
+        message = str(error)
+        if "PDF has no content" in message or "All pages are blank" in message:
+            raise RuntimeError(
+                "PDF has no extractable text layer. Scanned or image-only PDFs require OCR before indexing."
+            ) from error
+        raise
+    doc_id = submitted["doc_id"]
+    try:
+        response = client.get_tree(doc_id, node_summary=True, include_text=True)
+        document = client.get_document(doc_id)
+        structure = response.get("result")
+        if not isinstance(structure, list) or not structure:
+            raise RuntimeError("PageIndex returned an empty PDF tree")
+        return {
+            "doc_name": os.path.splitext(os.path.basename(request["inputPath"]))[0],
+            "summary": document.get("description"),
+            "structure": structure,
+        }
+    finally:
+        try:
+            client.delete_document(doc_id)
+        except Exception:
+            pass
+
 for line in sys.stdin:
     request = {}
     try:
@@ -50,17 +101,10 @@ for line in sys.stdin:
         if request.get("type") == "stop":
             break
         request_id = request["id"]
-        tree = asyncio.run(md_to_tree(
-            md_path=request["inputPath"],
-            if_thinning=False,
-            min_token_threshold=5000,
-            if_add_node_summary="yes",
-            summary_token_threshold=200,
-            model=request["model"],
-            if_add_doc_description="no",
-            if_add_node_text="yes",
-            if_add_node_id="yes",
-        ))
+        if request["format"] == "pdf":
+            tree = index_pdf(request)
+        else:
+            tree = index_markdown(request)
         output_path = request["outputPath"]
         output_dir = os.path.dirname(output_path)
         if output_dir:
@@ -75,6 +119,7 @@ for line in sys.stdin:
 export type PageIndexBatchJob = {
   inputPath: string;
   outputPath: string;
+  format?: DocumentFormat;
 };
 
 export type PageIndexBatchResult =
@@ -211,6 +256,7 @@ class PageIndexWorker {
         id,
         inputPath: job.inputPath,
         outputPath: job.outputPath,
+        format: job.format,
         model: this.config.model
       };
       this.child?.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
@@ -254,7 +300,14 @@ class PageIndexWorker {
 }
 
 function normalizeJobs(jobs: PageIndexBatchJob[]): PageIndexBatchJob[] {
-  return jobs.map((job) => ({ inputPath: path.resolve(job.inputPath), outputPath: path.resolve(job.outputPath) }));
+  return jobs.map((job) => {
+    const inputPath = path.resolve(job.inputPath);
+    const format = job.format ?? documentFormatFromPath(inputPath);
+    if (!format) {
+      throw new Error(`Unsupported document format: ${job.inputPath}`);
+    }
+    return { inputPath, outputPath: path.resolve(job.outputPath), format };
+  });
 }
 
 function failedResults(jobs: PageIndexBatchJob[], error: string, callbacks: PageIndexBatchCallbacks): PageIndexBatchResult[] {
@@ -401,7 +454,7 @@ function findSummary(value: unknown): string | undefined {
       return nested;
     }
   }
-  for (const key of ["children", "nodes"]) {
+  for (const key of ["children", "nodes", "structure"]) {
     const children = record[key];
     if (Array.isArray(children)) {
       for (const child of children) {

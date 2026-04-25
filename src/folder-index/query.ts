@@ -65,6 +65,9 @@ function applyRetrievalTrace(trace: QueryTrace | undefined, retrievalResult: Ret
 }
 
 async function readSourceMarkdown(rootDir: string, record: DocumentRecord): Promise<string | undefined> {
+  if (record.format === "pdf" || path.extname(record.path).toLowerCase() === ".pdf") {
+    return undefined;
+  }
   const candidates = [path.join(rootDir, record.path), record.absolutePath];
   for (const candidate of candidates) {
     try {

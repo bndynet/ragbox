@@ -102,6 +102,7 @@ export type InspectIndexDocument = {
   docId: string;
   path: string;
   title: string;
+  format?: DocumentRecord["format"];
   status: DocumentRecord["status"];
   indexPath: string;
   summary?: string;
@@ -302,6 +303,7 @@ function documentSummaries(manifest: Manifest): InspectIndexDocument[] {
     docId: record.docId,
     path: record.path,
     title: record.title,
+    format: record.format,
     status: record.status,
     indexPath: record.indexPath,
     summary: record.summary,

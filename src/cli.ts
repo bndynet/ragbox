@@ -1573,7 +1573,7 @@ async function main(): Promise<void> {
 
   program
     .name("ragbox")
-    .description("Index and query a Markdown/MDX folder with PageIndex")
+    .description("Index and query a Markdown/MDX/PDF folder with PageIndex")
     .version("0.2.0")
     .option("--config <path-or-name>", "ragbox config file path, or a name like prod for ragbox.config.prod.json");
 

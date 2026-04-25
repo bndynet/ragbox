@@ -1,6 +1,6 @@
 # Ragbox Examples
 
-This directory is a small multi-source documentation fixture for local indexing, querying, and smoke tests.
+This directory is a small multi-source documentation fixture for local indexing, querying, and smoke tests. Ragbox indexes Markdown, MDX, and text-layer PDF files; scanned PDFs need OCR first.
 
 ## Sources
 

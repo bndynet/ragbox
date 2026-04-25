@@ -82,8 +82,7 @@ export type ResolveRagboxServeConfigOptions = RagboxServeConfig & {
 
 export type ResolvedRagboxServeConfig = Required<Pick<RagboxServeConfig, "host" | "port">> & Pick<RagboxServeConfig, "authToken">;
 
-const DEFAULT_INCLUDE = ["**/*.md", "**/*.mdx"];
-const DEFAULT_EXCLUDE = ["node_modules/**", ".git/**", ".pageindex/**", "dist/**", "build/**"];
+const DEFAULT_INCLUDE = ["**/*.md", "**/*.mdx", "**/*.pdf"];
 const DEFAULT_API_KEY_PLACEHOLDER = "YOUR_OPENAI_API_KEY";
 const DEFAULT_SERVE_TOKEN_PLACEHOLDER = "YOUR_RAGBOX_SERVE_TOKEN";
 const API_KEY_PLACEHOLDERS = new Set([DEFAULT_API_KEY_PLACEHOLDER, "sk-..."]);
@@ -255,7 +254,8 @@ export function createDefaultRagboxConfig(options: Pick<WriteDefaultRagboxConfig
     },
     docs: {
       rootDir: docsDir,
-      outputDir
+      outputDir,
+      include: [...DEFAULT_INCLUDE]
     }
   };
 }

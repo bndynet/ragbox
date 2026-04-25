@@ -15,7 +15,7 @@ import {
 import { readPageIndexSummary, runPageIndexBatchPool } from "./pageindex-runner";
 import { writeLexicalIndex } from "./lexical-index";
 import { generateRootTree, writeRootTree } from "./root-tree";
-import { scanMarkdownFiles } from "./scan";
+import { scanDocuments } from "./scan";
 import { DocumentRecord, IndexFolderResult, IndexProgressEvent, PageIndexOptions, ScannedFile } from "./types";
 import { isStrictSubPath, normalizeAbsolutePath } from "./path-utils";
 
@@ -56,7 +56,7 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
   const rootTreePath = path.join(outputDir, "root-tree.json");
   const excludedDirs = isStrictSubPath(rootDir, outputDir) ? [outputDir] : [];
   const previousManifest = await readManifest(rootDir, config.outputDir);
-  const scannedFiles = await scanMarkdownFiles(rootDir, {
+  const scannedFiles = await scanDocuments(rootDir, {
     exclude: config.exclude,
     excludedDirs,
     include: config.include
@@ -86,7 +86,8 @@ export async function indexFolder(folder: string, options: PageIndexOptions = {}
     const results = await runPageIndexBatchPool(
       toIndex.map((scannedFile, index) => ({
         inputPath: scannedFile.absolutePath,
-        outputPath: outputPaths[index]
+        outputPath: outputPaths[index],
+        format: scannedFile.format
       })),
       {
         ...config,

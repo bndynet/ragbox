@@ -16,12 +16,12 @@
     "ragbox": {
       "rootDir": "./ragbox",
       "outputDir": "./.ragbox-index/ragbox",
-      "include": ["**/*.md", "**/*.mdx"]
+      "include": ["**/*.md", "**/*.mdx", "**/*.pdf"]
     },
     "icharts": {
       "rootDir": "./icharts",
       "outputDir": "./.ragbox-index/icharts",
-      "include": ["**/*.md", "**/*.mdx"]
+      "include": ["**/*.md", "**/*.mdx", "**/*.pdf"]
     }
   }
 }

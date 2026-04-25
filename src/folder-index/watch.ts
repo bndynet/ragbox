@@ -640,7 +640,7 @@ export async function startWatchFolder(folder: string, options: PageIndexOptions
       return;
     }
 
-    watcher = chokidar.watch(["**/*.md", "**/*.mdx"], {
+    watcher = chokidar.watch(["**/*.md", "**/*.mdx", "**/*.pdf"], {
       cwd: rootDir,
       ignored: isIgnored,
       ignoreInitial: true,
