@@ -259,7 +259,26 @@ async function installPageIndex(
     });
   }
 
-  const pythonPath = venvPythonPath(venvDir);
+  let pythonPath = venvPythonPath(venvDir);
+  if (!createdVenv) {
+    try {
+      await runCommand(pythonPath, ["-m", "pip", "--version"], {
+        env,
+        failureMessage: `PageIndex virtual environment is missing pip at ${venvDir}`,
+        missingMessage: `Virtual environment Python was not found: ${pythonPath}`
+      });
+    } catch {
+      // A failed `venv` creation can leave bin/python behind without pip. Rebuild
+      // the managed environment now that the system's venv support may be fixed.
+      await runCommand(python, ["-m", "venv", "--clear", venvDir], {
+        env,
+        failureMessage: `Failed to repair PageIndex virtual environment at ${venvDir}`,
+        missingMessage: `Python executable was not found: ${python}`
+      });
+      pythonPath = venvPythonPath(venvDir);
+    }
+  }
+
   await runCommand(pythonPath, ["-m", "pip", "install", PAGEINDEX_PACKAGE_SPEC], {
     env,
     failureMessage: `Failed to install ${PAGEINDEX_PACKAGE_SPEC}`,

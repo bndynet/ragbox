@@ -846,7 +846,7 @@ await advanced.indexFolder("/srv/app/docs", {
 
 ## 常见问题
 
-- `Failed to install pageindex`：检查 `python3`、`venv`、`pip` 和 Python 包源网络，或提前执行 `ragbox setup pageindex`
+- `Failed to install pageindex`：检查 `python3`、`venv` 和 Python 包源网络；如果此前创建虚拟环境时报过 `ensurepip is not available`，安装对应的 `python3-venv` 后，删除残留的 `.ragbox/pageindex-venv` 并重新运行命令。ragbox 也会自动重建缺少 `pip` 的托管环境。离线部署可提前执行 `ragbox setup pageindex`
 - 显式 Python 报 `Unsupported PageIndex package version`：在该环境安装要求的版本，或移除 `pageIndex.python`、`PAGEINDEX_PYTHON`、`--pageindex-python`，改用自动管理环境
 - 报 `PDF has no extractable text layer`：先对扫描版或纯图片 PDF 执行 OCR，再索引 OCR 后的 PDF
 - `OPENAI_API_KEY is required for query`：在私有 `ragbox.config.json` 里添加 `llm.apiKey`，或设置 `OPENAI_API_KEY`，也可以临时传 `--api-key`
