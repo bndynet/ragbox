@@ -1,6 +1,6 @@
 # Getting Started With ragbox
 
-`ragbox` turns Markdown and MDX documentation into a local queryable index. A typical user starts by creating a config file, editing it for their docs and model provider, and then starting the full local service loop.
+`ragbox` turns Markdown documentation into a local queryable index. A typical user starts by creating a config file, editing it for their docs and model provider, and then starting the full local service loop.
 
 The shortest project workflow is:
 

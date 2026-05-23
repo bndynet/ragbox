@@ -5,7 +5,7 @@
 When `ragbox start` runs, it does three things:
 
 1. It indexes the configured source or sources.
-2. It starts watch mode so later Markdown or MDX changes update the index.
+2. It starts watch mode so later Markdown changes update the index.
 3. It starts the HTTP service for `/health`, `/indexes`, `/query`, and `/reload`.
 
 The HTTP service starts as soon as watchers are registered, so `/health` can respond while the initial index is still running. After the initial index and later watch updates finish successfully, `start` reloads the service snapshot so new queries use the latest index.

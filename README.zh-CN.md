@@ -1,6 +1,6 @@
 # RAGbox 中文文档
 
-`ragbox` 可以让你从命令行、HTTP 服务或 Node.js 应用里直接询问 Markdown、MDX 和 PDF 文档。
+`ragbox` 可以让你从命令行、HTTP 服务或 Node.js 应用里直接询问 Markdown 和 PDF 文档。
 
 它会把文档目录变成本地可查询索引，适合产品文档、API 指南、运维 runbook、内部手册和 monorepo 多包文档。基础流程不需要部署向量数据库。
 
@@ -45,7 +45,7 @@ ragbox init
   "docs": {
     "rootDir": "./docs",
     "outputDir": "./.ragbox-index",
-    "include": ["**/*.md", "**/*.mdx", "**/*.pdf"]
+    "include": ["**/*.md", "**/*.pdf"]
   }
 }
 ```
@@ -118,7 +118,7 @@ ragbox query ./.ragbox-index "怎么配置认证？" \
 
 - Node.js 18 或更新版本
 - 带 `venv` 和 `pip` 的 Python 3，用于安装 PageIndex SDK
-- 一个包含 `.md`、`.mdx` 或带文本层 `.pdf` 的文档目录
+- 一个包含 `.md` 或带文本层 `.pdf` 的文档目录
 - 一个兼容 OpenAI `/chat/completions` 的模型服务
 - 模型服务 API key
 
@@ -207,12 +207,12 @@ ragbox --config ./ragbox.config.json index
     "ragbox": {
       "rootDir": "./ragbox",
       "outputDir": "./.ragbox-index/ragbox",
-      "include": ["**/*.md", "**/*.mdx", "**/*.pdf"]
+      "include": ["**/*.md", "**/*.pdf"]
     },
     "icharts": {
       "rootDir": "./icharts",
       "outputDir": "./.ragbox-index/icharts",
-      "include": ["**/*.md", "**/*.mdx", "**/*.pdf"]
+      "include": ["**/*.md", "**/*.pdf"]
     }
   }
 }
@@ -298,7 +298,7 @@ ragbox init --output ./configs/ragbox.config.json --force
 
 ### `ragbox index <folder>`
 
-为 Markdown/MDX/PDF 文档目录生成或更新本地索引。使用 `query` 或 `serve` 前需要先执行它。
+为 Markdown/PDF 文档目录生成或更新本地索引。使用 `query` 或 `serve` 前需要先执行它。
 
 ```bash
 ragbox index ./docs
@@ -309,9 +309,9 @@ ragbox index ./docs --pageindex-python /opt/venvs/pageindex/bin/python
 ragbox index ./docs --base-url https://api.openai.com/v1 --model gpt-4o-mini
 ```
 
-它会扫描 `**/*.md`、`**/*.mdx` 和 `**/*.pdf`，计算文件 hash，只重新索引新增、修改、之前失败的文件，并跳过未变化的 ready 文件。
+它会扫描 `**/*.md` 和 `**/*.pdf`，计算文件 hash，只重新索引新增、修改、之前失败的文件，并跳过未变化的 ready 文件。
 
-Markdown 和 MDX 继续使用 PageIndex 的 `md_to_tree` helper；PDF 使用包内官方 `PageIndexClient` 的本地 Flash 模式。本地 PDF 处理只提取文件已有的文本层，不执行 OCR，因此扫描版或纯图片 PDF 需要先做 OCR 再索引。
+Markdown 使用 PageIndex 的 `md_to_tree` helper；PDF 使用包内官方 `PageIndexClient` 的本地 Flash 模式。本地 PDF 处理只提取文件已有的文本层，不执行 OCR，因此扫描版或纯图片 PDF 需要先做 OCR 再索引。
 
 同一次索引还会在 `manifest.json`、`root-tree.json` 旁边写入 `lexical-index.json`。它只为 ready 的 PageIndex 节点保存本地精确 token terms。标准的 `query`、`queryIndex`、CLI 和 HTTP API 路径不会使用这个 sidecar；只有定制集成显式启用 tree plus lexical retriever 时才会读取它。
 
@@ -557,7 +557,7 @@ ragbox watch ./docs \
   --jsonl
 ```
 
-`watch` 监听 `.md`、`.mdx` 和 `.pdf` 文件的新增、修改、删除。它会忽略 `node_modules`、`.git`、`.pageindex`、`dist`、`build`，以及位于文档目录内的自定义输出目录。
+`watch` 监听 `.md` 和 `.pdf` 文件的新增、修改、删除。它会忽略 `node_modules`、`.git`、`.pageindex`、`dist`、`build`，以及位于文档目录内的自定义输出目录。
 
 使用 `--jsonl` 可以为集成场景输出带版本号的 JSON Lines 事件流。事件包括 `watch-start`、`watch-lock-acquired`、`watch-file-event`、`watch-index-start`、`watch-index-retry`、`watch-index-partial-failure`、`watch-output-promoted`、`watch-index-done`、`watch-index-failed`、`watch-health`、`watch-webhook-failed`、`watch-lock-released`、`watch-stop` 和 `index-progress`。
 
@@ -822,7 +822,7 @@ await advanced.indexFolder("/srv/app/docs", {
 
 简单说，`ragbox` 会保留文档结构，而不是一开始就把所有内容切成匿名 chunk：
 
-- 每个 `.md`/`.mdx`/`.pdf` 文件会生成一棵结构化 PageIndex 树
+- 每个 `.md`/`.pdf` 文件会生成一棵结构化 PageIndex 树
 - 文档目录会生成一份索引清单
 - 查询时先选择可能相关的文档，再选择文档里的相关章节
 - 最终回答只基于选中的章节正文生成
@@ -835,7 +835,7 @@ await advanced.indexFolder("/srv/app/docs", {
 
 | 维度 | Vector DB RAG | `ragbox` |
 | --- | --- | --- |
-| 索引单位 | 文本 chunk | Markdown/MDX/PDF 文件和 PageIndex 节点 |
+| 索引单位 | 文本 chunk | Markdown/PDF 文件和 PageIndex 节点 |
 | 检索信号 | 向量相似度 | LLM 基于文档树和节点树选择 |
 | 存储 | 向量数据库加文档存储 | 输出目录下的本地 JSON 文件 |
 | 上下文形态 | 扁平 chunk 列表 | 带文件路径和 node id 的结构化节点 |
